@@ -24,7 +24,7 @@ import androidx.compose.ui.graphics.lerp
 @Composable
 fun Modifier.meshGradient(
     points: List<List<Pair<Offset, Color>>>,
-    blendMode: BlendMode = BlendMode.DstIn,
+    gradientBlendMode: BlendMode = BlendMode.DstIn,
     resolutionX: Int = 1,
     resolutionY: Int = 1,
     showPoints: Boolean = false,
@@ -33,6 +33,15 @@ fun Modifier.meshGradient(
     val pointData by remember(points, resolutionX, resolutionY) {
         derivedStateOf {
             PointData(points, resolutionX, resolutionY)
+        }
+    }
+
+    val pointsPaint = remember {
+        Paint().apply {
+            color = Color.White.copy(alpha = .9f)
+            strokeWidth = 3f
+            strokeCap = StrokeCap.Round
+            blendMode = BlendMode.SrcOver
         }
     }
 
@@ -52,29 +61,20 @@ fun Modifier.meshGradient(
                             colors = pointData.colors,
                             indices = indicesModifier(pointData.indices)
                         ),
-                        blendMode = blendMode,
+                        blendMode = gradientBlendMode,
                         paint = paint,
                     )
                 }
 
                 if (showPoints) {
-                    val flattenedPaint = Paint()
-                    flattenedPaint.color = Color.White.copy(alpha = .9f)
-                    flattenedPaint.strokeWidth = 4f * .001f
-                    flattenedPaint.strokeCap = StrokeCap.Round
-                    flattenedPaint.blendMode = BlendMode.SrcOver
+                    val intermediatePoints = pointData.offsets
+                        .map { Offset(it.x * size.width, it.y * size.height) }
 
-                    scale(
-                        scaleX = size.width,
-                        scaleY = size.height,
-                        pivot = Offset.Zero
-                    ) {
-                        canvas.drawPoints(
-                            pointMode = PointMode.Points,
-                            points = pointData.offsets,
-                            paint = flattenedPaint
-                        )
-                    }
+                    canvas.drawPoints(
+                        pointMode = PointMode.Points,
+                        points = intermediatePoints,
+                        paint = pointsPaint
+                    )
                 }
             }
         }

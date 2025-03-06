@@ -3,10 +3,29 @@ package des.c5inco.mesh.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -30,13 +49,28 @@ import des.c5inco.mesh.ui.components.OffsetInputField
 import des.c5inco.mesh.ui.data.AppState
 import des.c5inco.mesh.ui.data.DimensionMode
 import kotlinx.coroutines.flow.collectLatest
-import mesh.composeapp.generated.resources.*
+import mesh.composeapp.generated.resources.Res
+import mesh.composeapp.generated.resources.distributeEvenly_dark
+import mesh.composeapp.generated.resources.featureCodeBlock_dark
+import mesh.composeapp.generated.resources.modeFilled_dark
+import mesh.composeapp.generated.resources.modeFixed_dark
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.Orientation
 import org.jetbrains.jewel.ui.Outline
-import org.jetbrains.jewel.ui.component.*
+import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.Divider
+import org.jetbrains.jewel.ui.component.DropdownLink
+import org.jetbrains.jewel.ui.component.Icon
+import org.jetbrains.jewel.ui.component.IconButton
+import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.SelectableIconButton
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.TextField
+import org.jetbrains.jewel.ui.component.Tooltip
+import org.jetbrains.jewel.ui.component.Typography
+import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.theme.colorPalette
 import java.awt.Toolkit
@@ -52,7 +86,7 @@ fun SidePanel(
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
-    
+
     VerticallyScrollableContainer(
         modifier = modifier
             .fillMaxHeight()
@@ -168,21 +202,21 @@ fun SidePanel(
                 Row {
                     DimensionInputField(
                         value = AppState.colorPointsRows,
-                        enabled = true,
-                        paramName = "Rows",
                         min = 2,
                         max = 10,
-                        onUpdate = { AppState.updatePointsRows(it.coerceIn(2, 10)) },
+                        enabled = true,
+                        paramName = "Rows",
+                        onValueChange = { AppState.updatePointsRows(it.coerceIn(2, 10)) },
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(Modifier.width(8.dp))
                     DimensionInputField(
                         value = AppState.colorPointsCols,
-                        enabled = true,
-                        paramName = "Cols",
                         min = 2,
                         max = 10,
-                        onUpdate = { AppState.updatePointsCols(it.coerceIn(2, 10)) },
+                        enabled = true,
+                        paramName = "Cols",
+                        onValueChange = { AppState.updatePointsCols(it.coerceIn(2, 10)) },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -355,10 +389,12 @@ private fun ColorInput(
                             isColorValid = validate()
                             if (isColorValid) onSubmit(color)
                         }
+
                         Key.Tab -> {
                             isColorValid = validate()
                             return@onKeyEvent false
                         }
+
                         Key.Escape -> {
                             onCancel()
                         }
@@ -399,9 +435,8 @@ private fun ColorPointRow(
     ) {
         ColorDropdown(
             selectedColor = colorInt,
-            colors = AppState.colors,
-            onSelected = { onUpdatePoint(Pair(Offset(x = x, y = y), it)) }
-        )
+            colors = AppState.colors
+        ) { onUpdatePoint(Pair(Offset(x = x, y = y), it)) }
         OffsetInputField(
             value = x,
             enabled = !constrainX,
@@ -427,8 +462,7 @@ private fun CanvasSection(
     onExport: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val canvasWidthMode by AppState.canvasWidthMode.collectAsState()
-    val canvasHeightMode by AppState.canvasHeightMode.collectAsState()
+    val canvasSizeMode = AppState.canvasSizeMode
     val canvasWidth by remember { AppState::canvasWidth }
     val canvasHeight by remember { AppState::canvasHeight }
     val focusManager = LocalFocusManager.current
@@ -444,60 +478,73 @@ private fun CanvasSection(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
+            Text("Background color:")
+
             ColorDropdown(
                 selectedColor = AppState.canvasBackgroundColor,
                 colors = AppState.colors,
-                allowTransparency = true,
-                onSelected = { AppState.canvasBackgroundColor = it }
-            )
+                allowTransparency = true
+            ) { AppState.canvasBackgroundColor = it }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Size:")
+
+            Tooltip(tooltip = {
+                Text(text = "Fill available space")
+            }) {
+                SelectableIconButton(
+                    selected = AppState.canvasSizeMode == DimensionMode.Fill,
+                    onClick = {
+                        AppState.canvasSizeMode = DimensionMode.Fill
+                        focusManager.clearFocus()
+                    },
+                ) {
+                    Icon(
+                        painter = painterResource(Res.drawable.modeFilled_dark),
+                        contentDescription = "Fill available space"
+                    )
+                }
+            }
+
+            Tooltip(tooltip = {
+                Text(text = "Fixed size")
+            }) {
+                SelectableIconButton(
+                    selected = AppState.canvasSizeMode == DimensionMode.Fixed,
+                    onClick = {
+                        AppState.canvasSizeMode = DimensionMode.Fixed
+                        focusManager.clearFocus()
+                    },
+                ) {
+                    Icon(
+                        painter = painterResource(Res.drawable.modeFixed_dark),
+                        contentDescription = "Fixed size"
+                    )
+                }
+            }
+
             DimensionInputField(
                 value = canvasWidth,
-                enabled = canvasWidthMode == DimensionMode.Fixed,
-                paramName = "W",
                 min = 100,
-                trailingIcon = {
-                    Tooltip(tooltip = {
-                        Text(text = "Toggle to ${if (canvasWidthMode == DimensionMode.Fixed) "Filled" else "Fixed"}")
-                    }) {
-                        IconButton(
-                            onClick = {
-                                AppState.updateCanvasWidthMode()
-                                focusManager.clearFocus()
-                            }
-                        ) {
-                            Icon(
-                                painter = painterResource(getModeIcon(canvasWidthMode)),
-                                contentDescription = null
-                            )
-                        }
-                    }
-                },
-                onUpdate = { AppState.canvasWidth = it },
+                enabled = canvasSizeMode == DimensionMode.Fixed,
+                paramName = "W",
+                onValueChange = { AppState.canvasWidth = it },
                 modifier = Modifier.weight(1f)
             )
+
             DimensionInputField(
                 value = canvasHeight,
-                enabled = canvasHeightMode == DimensionMode.Fixed,
-                paramName = "H",
                 min = 100,
-                trailingIcon = {
-                    Tooltip(tooltip = {
-                        Text(text = "Toggle to ${if (canvasHeightMode == DimensionMode.Fixed) "Filled" else "Fixed"}")
-                    }) {
-                        IconButton(
-                            onClick = {
-                                AppState.updateCanvasHeightMode()
-                                focusManager.clearFocus()
-                            }
-                        ) {
-                            Icon(
-                                painter = painterResource(getModeIcon(canvasHeightMode)),
-                                contentDescription = null
-                            )
-                        }
-                    }
-                },
-                onUpdate = { AppState.canvasHeight = it },
+                enabled = canvasSizeMode == DimensionMode.Fixed,
+                paramName = "H",
+                onValueChange = { AppState.canvasHeight = it },
                 modifier = Modifier.weight(1f)
             )
         }
@@ -525,7 +572,14 @@ private fun CanvasSection(
                             onExportScaleChange(it + 1)
                         },
                     ) {
-                        Text("${it + 1}x")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val scaleFactor = it + 1
+                            Text("${scaleFactor}x")
+                            Text(
+                                "(${canvasWidth * scaleFactor}x${canvasHeight * scaleFactor} px)",
+                                color = JewelTheme.globalColors.text.info
+                            )
+                        }
                     }
                 }
             }

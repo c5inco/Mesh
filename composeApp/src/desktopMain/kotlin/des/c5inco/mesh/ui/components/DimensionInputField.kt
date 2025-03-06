@@ -24,9 +24,9 @@ fun DimensionInputField(
     max: Int? = null,
     enabled: Boolean = false,
     paramName: String,
-    onUpdate: (Int) -> Unit,
-    trailingIcon: @Composable (() -> Unit)? = null,
+    onValueChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    trailingIcon: @Composable (() -> Unit)? = null,
 ) {
     val focusManager = LocalFocusManager.current
     val textFieldState = remember(value) { TextFieldState(value.toString()) }
@@ -57,7 +57,7 @@ fun DimensionInputField(
                         it
                     }
                 }
-                onUpdate(nextValue)
+                onValueChange(nextValue)
                 textFieldState.edit { replace(0, textFieldState.text.length, nextValue.toString()) }
             } ?: run {
                 reset()

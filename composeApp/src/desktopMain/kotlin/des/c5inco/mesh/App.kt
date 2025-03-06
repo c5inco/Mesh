@@ -31,12 +31,11 @@ fun App() {
         val coroutineScope = rememberCoroutineScope()
 
         GradientCanvas(
-            exportGraphicsLayer = exportGraphicsLayer,
-            exportScale = exportScale,
-            onPointDrag = { selectedColorPoint = it },
-            modifier = Modifier.weight(1f)
-        )
-        SidePanel(
+          exportGraphicsLayer = exportGraphicsLayer,
+          exportScale = exportScale,
+          modifier = Modifier.weight(1f)
+        ) { selectedColorPoint = it }
+      SidePanel(
             exportScale = exportScale,
             onExportScaleChange = { exportScale = it },
             onExport = {
