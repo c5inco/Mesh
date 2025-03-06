@@ -1,8 +1,8 @@
 [versions]
 androidx-lifecycle = "2.8.4"
-compose-multiplatform = "1.7.1" # Matches Jewel
+compose-multiplatform = "1.8.0-alpha03"
 junit = "4.13.2"
-kotlin = "2.0.21-RC" # Matches Jewel
+kotlin = "2.1.20-RC"
 kotlinx-coroutines = "1.10.1"
 kotlinpoet = "2.1.0"
 
