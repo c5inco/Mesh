@@ -53,9 +53,9 @@ import org.jetbrains.jewel.ui.util.thenIf
 fun ColorDropdown(
     selectedColor: Int,
     colors: List<Color>,
+    modifier: Modifier = Modifier,
     allowTransparency: Boolean = false,
     onSelected: (Int) -> Unit,
-    modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
 

@@ -15,8 +15,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.awt.image.BufferedImage
 import java.io.File
@@ -66,8 +64,7 @@ object AppState {
     var constrainEdgePoints by mutableStateOf(true)
     val colors = defaultColors.toMutableStateList()
     var canvasBackgroundColor: Int by mutableStateOf(-1)
-    private val _canvasWidthMode = MutableStateFlow(DimensionMode.Fill)
-    val canvasWidthMode = _canvasWidthMode.asStateFlow()
+    var canvasSizeMode by mutableStateOf(DimensionMode.Fill)
 
     private val _notificationFlow = MutableSharedFlow<String>()
     val notificationFlow = _notificationFlow
@@ -75,25 +72,6 @@ object AppState {
     fun sendNotification(message: String) {
         scope.launch {
             _notificationFlow.emit(message)
-        }
-    }
-
-    fun updateCanvasWidthMode() {
-        _canvasWidthMode.value = if (_canvasWidthMode.value == DimensionMode.Fill) {
-            DimensionMode.Fixed
-        } else {
-            DimensionMode.Fill
-        }
-    }
-
-    private val _canvasHeightMode = MutableStateFlow(DimensionMode.Fill)
-    val canvasHeightMode = _canvasHeightMode.asStateFlow()
-
-    fun updateCanvasHeightMode() {
-        _canvasHeightMode.value = if (_canvasHeightMode.value == DimensionMode.Fill) {
-            DimensionMode.Fixed
-        } else {
-            DimensionMode.Fill
         }
     }
 

@@ -3,9 +3,19 @@ package des.c5inco.mesh.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,23 +49,18 @@ import org.jetbrains.jewel.ui.util.thenIf
 fun GradientCanvas(
     exportGraphicsLayer: GraphicsLayer,
     exportScale: Int,
+    modifier: Modifier = Modifier,
     onPointDrag: (Pair<Int, Int>?) -> Unit = { _ -> },
-    modifier: Modifier = Modifier
 ) {
     val showPoints by remember { AppState::showPoints }
     val resolution by remember { AppState::resolution }
     val colors = remember { AppState.colorPoints }
 
-    val canvasWidthMode by AppState.canvasWidthMode.collectAsState()
-    val canvasHeightMode by AppState.canvasHeightMode.collectAsState()
+    val canvasSizeMode = AppState.canvasSizeMode
     var canvasWidth by remember { AppState::canvasWidth }
     var canvasHeight by remember { AppState::canvasHeight }
 
     val notifications = remember { mutableStateListOf<String>() }
-
-    val exportSize by derivedStateOf {
-        mutableStateOf(IntSize(canvasWidth, canvasHeight))
-    }
 
     val density = LocalDensity.current
 
@@ -68,7 +73,7 @@ fun GradientCanvas(
     }
 
     fun handlePositioned(coordinates: LayoutCoordinates) {
-        with (density) {
+        with(density) {
             val dpWidth = coordinates.size.width.toDp()
             val dpHeight = coordinates.size.height.toDp()
 
@@ -80,13 +85,17 @@ fun GradientCanvas(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .background(if (AppState.canvasBackgroundColor > -1) {
-                AppState.getColor(AppState.canvasBackgroundColor)
-            } else {
-                JewelTheme.colorPalette.gray(1)
-            })
+            .background(
+                if (AppState.canvasBackgroundColor > -1) {
+                    AppState.getColor(AppState.canvasBackgroundColor)
+                } else {
+                    JewelTheme.colorPalette.gray(1)
+                }
+            )
             .fillMaxSize()
     ) {
+        val canvasAspectRatio by remember { derivedStateOf { canvasWidth.toFloat() / canvasHeight } }
+
         BoxWithConstraints(
             modifier = Modifier
                 .pointerInput(Unit) {
@@ -97,20 +106,12 @@ fun GradientCanvas(
                     )
                 }
                 .padding(32.dp)
-                .then(
-                    if (canvasWidthMode == DimensionMode.Fill) {
-                        Modifier.fillMaxWidth()
-                    } else {
-                        Modifier.width(canvasWidth.dp)
-                    }
-                )
-                .then(
-                    if (canvasHeightMode == DimensionMode.Fill) {
-                        Modifier.fillMaxHeight()
-                    } else {
-                        Modifier.height(canvasHeight.dp)
-                    }
-                )
+                .thenIf(canvasSizeMode == DimensionMode.Fixed) {
+                    aspectRatio(canvasAspectRatio)
+                }
+                .thenIf(canvasSizeMode == DimensionMode.Fill) {
+                    fillMaxSize()
+                }
         ) {
             val maxWidth = constraints.maxWidth
             val maxHeight = constraints.maxHeight
@@ -134,17 +135,15 @@ fun GradientCanvas(
 
             Box(
                 Modifier
-                    .thenIf(canvasWidthMode == DimensionMode.Fill || canvasHeightMode == DimensionMode.Fill) {
-                        Modifier.onGloballyPositioned { handlePositioned(it) }
+                    .thenIf(canvasSizeMode == DimensionMode.Fill) {
+                        onGloballyPositioned { handlePositioned(it) }
                     }
                     .clip(RoundedCornerShape(16.dp))
                     .drawWithContent {
-                        // Record content on visible graphics layer
+                        // Record content on a visible graphics layer
                         graphicsLayer.record {
                             this@drawWithContent.drawContent()
                         }
-
-                        val (width, height) = exportSize.value
 
                         // Scale and translate the export graphics layer accordingly
                         exportGraphicsLayer.apply {
@@ -153,13 +152,15 @@ fun GradientCanvas(
 
                             when (exportScale) {
                                 3 -> {
-                                    translationX = width.toFloat() * 3
-                                    translationY = height.toFloat() * 3
+                                    translationX = canvasWidth.toFloat() * 3
+                                    translationY = canvasHeight.toFloat() * 3
                                 }
+
                                 2 -> {
-                                    translationX = width.toFloat()
-                                    translationY = height.toFloat()
+                                    translationX = canvasWidth.toFloat()
+                                    translationY = canvasHeight.toFloat()
                                 }
+
                                 else -> {
                                     translationX = 0f
                                     translationY = 0f
@@ -169,7 +170,7 @@ fun GradientCanvas(
 
                         // Record content on the export graphics layer
                         exportGraphicsLayer.record(
-                            size = IntSize(width * exportScale, height * exportScale),
+                            size = IntSize(canvasWidth * exportScale, canvasHeight * exportScale),
                         ) {
                             scale(
                                 scale = 1f / density.density,
