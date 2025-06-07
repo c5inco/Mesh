@@ -21,14 +21,18 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -53,6 +57,7 @@ import org.jetbrains.jewel.ui.theme.colorPalette
 import org.jetbrains.jewel.ui.util.thenIf
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun GradientCanvas(
     exportGraphicsLayer: GraphicsLayer,
@@ -74,6 +79,8 @@ fun GradientCanvas(
     modifier: Modifier = Modifier
 ) {
     val notifications = remember { mutableStateListOf<String>() }
+    val zoomState = remember { mutableStateOf(1f) }
+    val panState = remember { mutableStateOf(Offset.Zero) }
 
     val exportSize by derivedStateOf {
         mutableStateOf(IntSize(canvasWidth, canvasHeight))
@@ -90,7 +97,7 @@ fun GradientCanvas(
     }
 
     fun handlePositioned(coordinates: LayoutCoordinates) {
-        with (density) {
+        with(density) {
             val dpWidth = coordinates.size.width.toDp()
             val dpHeight = coordinates.size.height.toDp()
 
@@ -101,15 +108,22 @@ fun GradientCanvas(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .background(if (canvasBackgroundColor > -1L) {
-                availableColors.findColor(canvasBackgroundColor)
-            } else {
-                JewelTheme.colorPalette.gray(1)
-            })
+            .background(
+                if (canvasBackgroundColor > -1L) {
+                    availableColors.findColor(canvasBackgroundColor)
+                } else {
+                    JewelTheme.colorPalette.gray(1)
+                }
+            )
             .fillMaxSize()
     ) {
         BoxWithConstraints(
             modifier = Modifier
+                .onPointerEvent(PointerEventType.Scroll) { event ->
+                    val scrollY = event.changes.first().scrollDelta.y
+                    val zoomFactor = if (scrollY > 0) 0.9f else 1.1f
+                    zoomState.value = (zoomState.value * zoomFactor).coerceIn(0.5f, 5f)
+                }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
@@ -117,6 +131,7 @@ fun GradientCanvas(
                         }
                     )
                 }
+
                 .padding(32.dp)
                 .then(
                     if (canvasWidthMode == DimensionMode.Fill) {
@@ -141,8 +156,10 @@ fun GradientCanvas(
                 val currentPoint = colorPoints[coordinate.first]
                 val currentOffset = currentPoint.first
 
-                val x = (currentOffset.x + (offsetX / maxWidth)).coerceIn(0f, 1f)
-                val y = (currentOffset.y + (offsetY / maxHeight)).coerceIn(0f, 1f)
+                val scaledOffsetX = offsetX / (maxWidth * zoomState.value)
+                val scaledOffsetY = offsetY / (maxHeight * zoomState.value)
+                val x = (currentOffset.x + scaledOffsetX).coerceIn(0f, 1f)
+                val y = (currentOffset.y + scaledOffsetY).coerceIn(0f, 1f)
 
                 println("$x, $y")
                 onPointDrag(
@@ -156,6 +173,10 @@ fun GradientCanvas(
 
             Box(
                 Modifier
+                    .graphicsLayer(
+                        scaleX = zoomState.value,
+                        scaleY = zoomState.value
+                    )
                     .thenIf(canvasWidthMode == DimensionMode.Fill || canvasHeightMode == DimensionMode.Fill) {
                         Modifier.onGloballyPositioned { handlePositioned(it) }
                     }
@@ -178,10 +199,12 @@ fun GradientCanvas(
                                     translationX = width.toFloat() * 3
                                     translationY = height.toFloat() * 3
                                 }
+
                                 2 -> {
                                     translationX = width.toFloat()
                                     translationY = height.toFloat()
                                 }
+
                                 else -> {
                                     translationX = 0f
                                     translationY = 0f
@@ -218,6 +241,7 @@ fun GradientCanvas(
             ) {
                 Spacer(Modifier.fillMaxSize())
             }
+            // Points layout outside the zoomed area but manually positioned
             Layout(
                 content = {
                     if (showPoints) {
@@ -267,17 +291,36 @@ fun GradientCanvas(
                                 val xOffset = meshPoints[row][col].first.x
                                 val yOffset = meshPoints[row][col].first.y
 
-                                val x =
-                                    ((xOffset * (constraints.maxWidth)) - cursorWidth / 2).toInt()
-                                val y =
-                                    ((yOffset * (constraints.maxHeight)) - cursorHeight / 2).toInt()
-                                placeable.place(x, y)
+                                // Apply zoom transformation manually (centered)
+                                val baseX = (xOffset * constraints.maxWidth) - cursorWidth / 2
+                                val baseY = (yOffset * constraints.maxHeight) - cursorHeight / 2
+
+                                val centerX = constraints.maxWidth / 2f
+                                val centerY = constraints.maxHeight / 2f
+
+                                val zoomedX = centerX + (baseX - centerX) * zoomState.value
+                                val zoomedY = centerY + (baseY - centerY) * zoomState.value
+
+                                placeable.place(zoomedX.toInt(), zoomedY.toInt())
                             }
                         }
                     }
                 }
             )
         }
+
+        // Zoom level display for debugging
+        Text(
+            text = "Zoom: ${String.format("%.1f", zoomState.value)}x",
+            modifier = Modifier
+                .padding(16.dp)
+                .align(Alignment.TopStart)
+                .background(
+                    JewelTheme.colorPalette.gray(2).copy(alpha = 0.8f),
+                    RoundedCornerShape(8.dp)
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        )
 
         notifications.reversed().forEach {
             CanvasSnackbar(
