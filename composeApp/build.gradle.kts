@@ -70,7 +70,7 @@ compose.desktop {
         mainClass = "des.c5inco.mesh.MainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb)
 
             packageVersion = version.toString()
             packageName = baseName
@@ -82,6 +82,12 @@ compose.desktop {
                 dockName = baseName
                 iconFile = rootProject.file("artwork/icon.icns")
                 bundleID = "des.c5inco.mesh"
+            }
+            linux {
+                iconFile = rootProject.file("artwork/icon.png")
+            }
+            windows {
+                iconFile = rootProject.file("artwork/icon.ico")
             }
         }
     }
