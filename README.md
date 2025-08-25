@@ -18,15 +18,16 @@ Built as a [Compose Desktop](https://www.jetbrains.com/compose-multiplatform/) a
 - Precise control point positioning
 - Edge point constraints
 - Interactive gradient preview
+- Export code for gradient or as an image
+- Basic ability to change canvas size and background color
+- Changes are autosaved
 - Dark theme UI using Jewel components
 
 ### Future
 
-- [x] Export code for gradient
-- [x] Export gradient as image
-- [x] Ability to change canvas size and background color
+- [ ] Ability to save configurations as documents
+- [ ] Adding grain
 - [ ] Allow changing resolution of gradient
-- [ ] Save/load gradient configurations
 - [ ] Multiple gradient presets
 - [ ] Gradient animating fun
 - [ ] Undo/redo functionality
