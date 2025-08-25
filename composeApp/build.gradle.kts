@@ -14,7 +14,6 @@ plugins {
 }
 
 repositories {
-    maven("https://packages.jetbrains.team/maven/p/kpm/public/")
     mavenCentral()
     google()
 }
@@ -46,8 +45,8 @@ kotlin {
             implementation(libs.sqlite.bundled)
         }
         desktopMain.dependencies {
-            // See https://github.com/JetBrains/Jewel/releases for the release notes
-            implementation("org.jetbrains.jewel:jewel-int-ui-standalone-243:0.27.0")
+            // See https://github.com/JetB  rains/Jewel/releases for the release notes
+            implementation("org.jetbrains.jewel:jewel-int-ui-standalone:0.29.0-252.24604")
 
             implementation(compose.desktop.currentOs) {
                 exclude(group = "org.jetbrains.compose.material")
