@@ -24,10 +24,7 @@ val baseName = "Mesh"
 kotlin {
     jvm("desktop")
 
-    jvmToolchain {
-        vendor = JvmVendorSpec.JETBRAINS
-        languageVersion = JavaLanguageVersion.of(21)
-    }
+    jvmToolchain(21)
     
     sourceSets {
         val desktopMain by getting
