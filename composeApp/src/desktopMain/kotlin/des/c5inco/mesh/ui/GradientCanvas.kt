@@ -50,7 +50,6 @@ import model.findColor
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.theme.colorPalette
-import org.jetbrains.jewel.ui.util.thenIf
 import kotlin.math.roundToInt
 
 @Composable
@@ -156,9 +155,11 @@ fun GradientCanvas(
 
             Box(
                 Modifier
-                    .thenIf(canvasWidthMode == DimensionMode.Fill || canvasHeightMode == DimensionMode.Fill) {
-                        Modifier.onGloballyPositioned { handlePositioned(it) }
-                    }
+                    .then(
+                        if (canvasWidthMode == DimensionMode.Fill || canvasHeightMode == DimensionMode.Fill) {
+                            Modifier.onGloballyPositioned { handlePositioned(it) }
+                        } else Modifier
+                    )
                     .clip(RoundedCornerShape(16.dp))
                     .drawWithContent {
                         // Record content on visible graphics layer
