@@ -8,6 +8,7 @@ import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DimensionMode
+import data.MeshDocument
 import des.c5inco.mesh.common.toHexStringNoHash
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,9 @@ import javax.imageio.ImageIO
 data class AppUiState(
     val showPoints: Boolean = false,
     val constrainEdgePoints: Boolean = true,
+    val currentDocumentName: String = "Untitled",
+    val currentDocumentPath: File? = null,
+    val hasUnsavedChanges: Boolean = false,
 )
 
 private val defaultColorPoints = listOf(
@@ -106,6 +110,9 @@ class AppConfiguration(
         AppUiState(
             showPoints = showPoints,
             constrainEdgePoints = constrainEdgePoints,
+            currentDocumentName = "Untitled",
+            currentDocumentPath = null,
+            hasUnsavedChanges = false,
         )
     )
 
@@ -124,12 +131,14 @@ class AppConfiguration(
                 canvasWidthMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        markAsModified()
     }
 
     fun updateCanvasWidth(width: Int) {
         meshState.update {
             it.copy(canvasWidth = width)
         }
+        markAsModified()
     }
 
     fun updateCanvasHeightMode() {
@@ -139,12 +148,14 @@ class AppConfiguration(
                 canvasHeightMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        markAsModified()
     }
 
     fun updateCanvasHeight(height: Int) {
         meshState.update {
             it.copy(canvasHeight = height)
         }
+        markAsModified()
     }
 
     fun updateBlurLevel(level: Float) {
@@ -153,10 +164,12 @@ class AppConfiguration(
                 blurLevel = level
             )
         }
+        markAsModified()
     }
 
     fun updateCanvasBackgroundColor(color: Long) {
         canvasBackgroundColor.update { color }
+        markAsModified()
     }
 
     fun updateTotalRows(rows: Int) {
@@ -164,6 +177,7 @@ class AppConfiguration(
             it.copy(rows = rows.coerceIn(2, 10))
         }
         generateMeshPoints()
+        markAsModified()
     }
 
     fun updateTotalCols(cols: Int) {
@@ -171,6 +185,7 @@ class AppConfiguration(
             it.copy(cols = cols.coerceIn(2, 10))
         }
         generateMeshPoints()
+        markAsModified()
     }
 
     fun saveMeshState() {
@@ -230,6 +245,7 @@ class AppConfiguration(
         colorPointsInRow.set(index = col, element = newPoint)
 
         meshPoints.set(index = row, element = colorPointsInRow.toList())
+        markAsModified()
     }
 
     fun distributeMeshPointsEvenly() {
@@ -254,6 +270,7 @@ class AppConfiguration(
         }
         meshPoints.clear()
         meshPoints.addAll(newPoints)
+        markAsModified()
     }
 
     suspend fun saveMeshPoints() {
@@ -333,5 +350,119 @@ class AppConfiguration(
         uiState.update {
             it.copy(constrainEdgePoints = constrainEdgePoints)
         }
+    }
+
+    private fun markAsModified() {
+        uiState.update {
+            it.copy(hasUnsavedChanges = true)
+        }
+    }
+
+    /**
+     * Creates a new document, replacing the current state
+     */
+    fun newDocument() {
+        val document = DocumentManager.createNewDocument()
+        loadDocumentState(document, null)
+        Notifications.send("📄 New document created")
+    }
+
+    /**
+     * Opens a document using a file chooser dialog
+     */
+    fun openDocument() {
+        val file = DocumentManager.showOpenDialog() ?: return
+        val document = DocumentManager.loadDocument(file)
+        
+        if (document != null) {
+            loadDocumentState(document, file)
+            Notifications.send("📂 Opened ${file.name}")
+        } else {
+            Notifications.send("❌ Failed to open document")
+        }
+    }
+
+    /**
+     * Saves the current document to its current path, or shows save dialog if no path
+     */
+    fun saveDocument(): Boolean {
+        val currentPath = uiState.value.currentDocumentPath
+        
+        val file = if (currentPath != null) {
+            currentPath
+        } else {
+            DocumentManager.showSaveDialog(uiState.value.currentDocumentName) ?: return false
+        }
+        
+        return saveDocumentToFile(file)
+    }
+
+    /**
+     * Shows a save dialog and saves the document to a new location
+     */
+    fun saveDocumentAs(): Boolean {
+        val file = DocumentManager.showSaveDialog(uiState.value.currentDocumentName) ?: return false
+        return saveDocumentToFile(file)
+    }
+
+    private fun saveDocumentToFile(file: File): Boolean {
+        val document = MeshDocument(
+            name = file.nameWithoutExtension,
+            meshState = meshState.value,
+            meshPoints = meshPoints.toSavedMeshPoints(),
+            canvasBackgroundColor = canvasBackgroundColor.value
+        )
+        
+        val success = DocumentManager.saveDocument(document, file)
+        if (success) {
+            uiState.update {
+                it.copy(
+                    currentDocumentName = file.nameWithoutExtension,
+                    currentDocumentPath = file,
+                    hasUnsavedChanges = false
+                )
+            }
+            Notifications.send("💾 Saved ${file.name}")
+        } else {
+            Notifications.send("❌ Failed to save document")
+        }
+        return success
+    }
+
+    private fun loadDocumentState(document: MeshDocument, file: File?) {
+        // Update mesh state
+        meshState.update { document.meshState }
+        
+        // Update canvas background color
+        canvasBackgroundColor.update { document.canvasBackgroundColor }
+        
+        // Update mesh points
+        meshPoints.clear()
+        if (document.meshPoints.isEmpty()) {
+            meshPoints.addAll(defaultColorPoints)
+        } else {
+            meshPoints.addAll(document.meshPoints.toOffsetGrid())
+        }
+        
+        // Update UI state
+        uiState.update {
+            it.copy(
+                currentDocumentName = document.name,
+                currentDocumentPath = file,
+                hasUnsavedChanges = false
+            )
+        }
+    }
+
+    /**
+     * Gets the current document for saving
+     */
+    fun getCurrentDocument(): MeshDocument {
+        return MeshDocument(
+            name = uiState.value.currentDocumentName,
+            meshState = meshState.value,
+            meshPoints = meshPoints.toSavedMeshPoints(),
+            canvasBackgroundColor = canvasBackgroundColor.value
+        )
     }
 }

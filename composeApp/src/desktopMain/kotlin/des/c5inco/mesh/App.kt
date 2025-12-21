@@ -79,6 +79,8 @@ fun App(
             meshPoints = configuration.meshPoints,
             showPoints = uiState.showPoints,
             constrainEdgePoints = uiState.constrainEdgePoints,
+            currentDocumentName = uiState.currentDocumentName,
+            hasUnsavedChanges = uiState.hasUnsavedChanges,
             onCanvasWidthModeChange = configuration::updateCanvasWidthMode,
             onCanvasWidthChange = configuration::updateCanvasWidth,
             onCanvasHeightModeChange = configuration::updateCanvasHeightMode,
@@ -120,6 +122,10 @@ fun App(
                 configuration.removeColorFromMeshPoints(it.uid)
                 configuration.deleteColor(it)
             },
+            onNewDocument = configuration::newDocument,
+            onOpenDocument = configuration::openDocument,
+            onSaveDocument = configuration::saveDocument,
+            onSaveDocumentAs = configuration::saveDocumentAs,
             selectedColorPoint = selectedColorPoint,
             modifier = Modifier.width(280.dp)
         )
