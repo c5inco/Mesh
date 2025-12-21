@@ -1,11 +1,9 @@
 package des.c5inco.mesh
 
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -13,8 +11,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.toAwtImage
 import androidx.compose.ui.input.key.Key
@@ -23,7 +19,7 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import des.c5inco.mesh.data.AppConfiguration
@@ -43,19 +39,11 @@ fun App(
     val canvasBackgroundColor by configuration.canvasBackgroundColor.collectAsState()
     val uiState by configuration.uiState.collectAsState()
     val meshState by configuration.meshState.collectAsState()
-    
-    val focusRequester = remember { FocusRequester() }
-    
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
 
     Row(
         Modifier
             .fillMaxSize()
-            .focusRequester(focusRequester)
-            .focusable()
-            .onKeyEvent { keyEvent ->
+            .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     val isCtrlOrCmd = keyEvent.isCtrlPressed || keyEvent.isMetaPressed
                     
@@ -64,21 +52,21 @@ fun App(
                         isCtrlOrCmd && !keyEvent.isShiftPressed && keyEvent.key == Key.Z -> {
                             if (configuration.canUndo()) {
                                 configuration.undo()
-                                return@onKeyEvent true
+                                return@onPreviewKeyEvent true
                             }
                         }
                         // Redo: Ctrl+Shift+Z (Windows/Linux) or Cmd+Shift+Z (Mac)
                         isCtrlOrCmd && keyEvent.isShiftPressed && keyEvent.key == Key.Z -> {
                             if (configuration.canRedo()) {
                                 configuration.redo()
-                                return@onKeyEvent true
+                                return@onPreviewKeyEvent true
                             }
                         }
                         // Alternative Redo: Ctrl+Y (Windows/Linux only)
                         keyEvent.isCtrlPressed && keyEvent.key == Key.Y -> {
                             if (configuration.canRedo()) {
                                 configuration.redo()
-                                return@onKeyEvent true
+                                return@onPreviewKeyEvent true
                             }
                         }
                     }

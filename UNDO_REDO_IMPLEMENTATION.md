@@ -71,10 +71,10 @@ Added keyboard event handling for undo/redo shortcuts:
 - **Ctrl+Y**: Alternative Redo (Windows/Linux only)
 
 **Implementation Details:**
-- Root `Row` composable is made focusable
-- Focus is automatically requested on startup
-- Key events are intercepted before reaching child components
+- Uses `onPreviewKeyEvent` on root `Row` composable to intercept keyboard events
+- Preview events are processed BEFORE child components, ensuring shortcuts work even when text fields or other focusable elements have focus
 - Returns `true` when handling undo/redo to prevent event propagation
+- No focus management needed - preview events work globally
 
 ## User Experience
 
@@ -124,9 +124,10 @@ Added keyboard event handling for undo/redo shortcuts:
 - **Behavior**: Oldest entries are removed when limit is reached
 
 ### 4. Keyboard Shortcut Handling
-- **Decision**: Handle at root composable level with focusable modifier
-- **Rationale**: Ensures shortcuts work regardless of which UI element has focus
-- **Implementation**: Focus requested on startup, events intercepted before children
+- **Decision**: Use `onPreviewKeyEvent` instead of `onKeyEvent`
+- **Rationale**: Preview events are processed before child components receive them, ensuring global shortcuts work even when text fields or other focusable elements have focus
+- **Alternative Considered**: Focus management with `focusRequester` - rejected due to focus conflicts with interactive UI elements
+- **Benefit**: No focus management needed, shortcuts always work
 
 ## Testing Recommendations
 
