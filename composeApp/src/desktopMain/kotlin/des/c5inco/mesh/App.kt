@@ -13,6 +13,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.toAwtImage
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.Notifications
@@ -33,7 +41,38 @@ fun App(
     val meshState by configuration.meshState.collectAsState()
 
     Row(
-        Modifier.fillMaxSize()
+        Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    val isCtrlOrCmd = keyEvent.isCtrlPressed || keyEvent.isMetaPressed
+                    
+                    when {
+                        // Undo: Ctrl+Z (Windows/Linux) or Cmd+Z (Mac)
+                        isCtrlOrCmd && !keyEvent.isShiftPressed && keyEvent.key == Key.Z -> {
+                            if (configuration.canUndo()) {
+                                configuration.undo()
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        // Redo: Ctrl+Shift+Z (Windows/Linux) or Cmd+Shift+Z (Mac)
+                        isCtrlOrCmd && keyEvent.isShiftPressed && keyEvent.key == Key.Z -> {
+                            if (configuration.canRedo()) {
+                                configuration.redo()
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        // Alternative Redo: Ctrl+Y (Windows/Linux only)
+                        keyEvent.isCtrlPressed && keyEvent.key == Key.Y -> {
+                            if (configuration.canRedo()) {
+                                configuration.redo()
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                    }
+                }
+                false
+            }
     ) {
         var selectedColorPoint: Pair<Int, Int>? by remember { mutableStateOf(null) }
         var exportScale by remember { mutableStateOf(1) }
@@ -58,9 +97,15 @@ fun App(
                 configuration.updateCanvasHeight(height)
             },
             onTogglePoints = { configuration.toggleShowingPoints() },
-            onPointDragStartEnd = { selectedColorPoint = it },
+            onPointDragStartEnd = { 
+                if (it != null) {
+                    // Drag started - save state for undo
+                    configuration.prepareForDrag()
+                }
+                selectedColorPoint = it 
+            },
             onPointDrag = { row, col, point ->
-                configuration.updateMeshPoint(row, col, point)
+                configuration.updateMeshPoint(row, col, point, saveForUndo = false)
             },
             modifier = Modifier.weight(1f)
         )
@@ -87,7 +132,7 @@ fun App(
             onUpdateTotalRows = configuration::updateTotalRows,
             onUpdateTotalCols = configuration::updateTotalCols,
             onUpdateMeshPoint = { row, col, point ->
-                configuration.updateMeshPoint(row, col, point)
+                configuration.updateMeshPoint(row, col, point, saveForUndo = true)
             },
             onTogglePoints = { configuration.toggleShowingPoints() },
             onToggleConstrainingEdgePoints = { configuration.toggleConstrainingEdgePoints() },

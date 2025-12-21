@@ -58,6 +58,7 @@ class AppConfiguration(
     private var constrainEdgePoints: Boolean = true,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val undoRedoManager = UndoRedoManager()
 
     companion object {
         const val MAX_BLUR_LEVEL = 40
@@ -118,6 +119,7 @@ class AppConfiguration(
     }
 
     fun updateCanvasWidthMode() {
+        saveStateForUndo()
         meshState.update {
             val current = it.canvasWidthMode
             it.copy(
@@ -133,6 +135,7 @@ class AppConfiguration(
     }
 
     fun updateCanvasHeightMode() {
+        saveStateForUndo()
         meshState.update {
             val current = it.canvasHeightMode
             it.copy(
@@ -148,6 +151,7 @@ class AppConfiguration(
     }
 
     fun updateBlurLevel(level: Float) {
+        saveStateForUndo()
         meshState.update {
             it.copy(
                 blurLevel = level
@@ -156,10 +160,12 @@ class AppConfiguration(
     }
 
     fun updateCanvasBackgroundColor(color: Long) {
+        saveStateForUndo()
         canvasBackgroundColor.update { color }
     }
 
     fun updateTotalRows(rows: Int) {
+        saveStateForUndo()
         meshState.update {
             it.copy(rows = rows.coerceIn(2, 10))
         }
@@ -167,6 +173,7 @@ class AppConfiguration(
     }
 
     fun updateTotalCols(cols: Int) {
+        saveStateForUndo()
         meshState.update {
             it.copy(cols = cols.coerceIn(2, 10))
         }
@@ -207,7 +214,10 @@ class AppConfiguration(
         }
     }
 
-    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) {
+    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>, saveForUndo: Boolean = true) {
+        if (saveForUndo) {
+            saveStateForUndo()
+        }
         val colorPointsInRow = meshPoints[row].toMutableList()
 
         var newX = point.first.x
@@ -231,8 +241,13 @@ class AppConfiguration(
 
         meshPoints.set(index = row, element = colorPointsInRow.toList())
     }
+    
+    fun prepareForDrag() {
+        saveStateForUndo()
+    }
 
     fun distributeMeshPointsEvenly() {
+        saveStateForUndo()
         val currentMeshState = meshState.value
         val newPoints = meshPoints.mapIndexed { rowIdx, currentPoints ->
             val newPoints = mutableListOf<Pair<Offset, Long>>()
@@ -263,6 +278,7 @@ class AppConfiguration(
     }
 
     fun removeColorFromMeshPoints(colorToRemove: Long) {
+        saveStateForUndo()
         meshPoints.forEachIndexed { idx, points ->
             val newPoints = points.map { point ->
                 if (point.second == colorToRemove) {
@@ -334,4 +350,53 @@ class AppConfiguration(
             it.copy(constrainEdgePoints = constrainEdgePoints)
         }
     }
+
+    // Undo/Redo functionality
+    
+    private fun createSnapshot(): AppStateSnapshot {
+        return AppStateSnapshot(
+            meshPoints = meshPoints.map { it.toList() },
+            meshState = meshState.value,
+            canvasBackgroundColor = canvasBackgroundColor.value,
+        )
+    }
+    
+    private fun applySnapshot(snapshot: AppStateSnapshot) {
+        // Apply mesh points
+        meshPoints.clear()
+        meshPoints.addAll(snapshot.meshPoints.map { it.toMutableStateList() })
+        
+        // Apply mesh state
+        meshState.value = snapshot.meshState
+        
+        // Apply canvas background color
+        canvasBackgroundColor.value = snapshot.canvasBackgroundColor
+    }
+    
+    private fun saveStateForUndo() {
+        val snapshot = createSnapshot()
+        undoRedoManager.saveState(snapshot)
+    }
+    
+    fun undo() {
+        val currentSnapshot = createSnapshot()
+        val previousSnapshot = undoRedoManager.undo(currentSnapshot)
+        
+        if (previousSnapshot != null) {
+            applySnapshot(previousSnapshot)
+        }
+    }
+    
+    fun redo() {
+        val currentSnapshot = createSnapshot()
+        val nextSnapshot = undoRedoManager.redo(currentSnapshot)
+        
+        if (nextSnapshot != null) {
+            applySnapshot(nextSnapshot)
+        }
+    }
+    
+    fun canUndo(): Boolean = undoRedoManager.canUndo
+    
+    fun canRedo(): Boolean = undoRedoManager.canRedo
 }
