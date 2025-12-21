@@ -24,7 +24,10 @@ val baseName = "Mesh"
 kotlin {
     jvm("desktop")
 
-    jvmToolchain(21)
+    jvmToolchain {
+        vendor = JvmVendorSpec.JETBRAINS
+        languageVersion = JavaLanguageVersion.of(21)
+    }
     
     sourceSets {
         val desktopMain by getting
@@ -49,8 +52,7 @@ kotlin {
         }
         
         desktopMain.dependencies {
-            // See https://github.com/JetB  rains/Jewel/releases for the release notes
-            implementation("org.jetbrains.jewel:jewel-int-ui-standalone:0.29.0-252.24604")
+            implementation(libs.jewel.int.ui.standalone)
 
             implementation(compose.desktop.currentOs) {
                 exclude(group = "org.jetbrains.compose.material")

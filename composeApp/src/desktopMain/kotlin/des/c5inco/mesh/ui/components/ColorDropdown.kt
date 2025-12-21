@@ -45,10 +45,8 @@ import org.jetbrains.jewel.ui.component.MenuScope
 import org.jetbrains.jewel.ui.component.PopupMenu
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.styling.DropdownStyle
-import org.jetbrains.jewel.ui.focusOutline
 import org.jetbrains.jewel.ui.outline
 import org.jetbrains.jewel.ui.theme.dropdownStyle
-import org.jetbrains.jewel.ui.util.thenIf
 
 @Composable
 fun ColorDropdown(
@@ -165,7 +163,6 @@ private fun DropdownButton(
                 indication = null,
             )
             .background(colors.backgroundFor(dropdownState).value, shape)
-            .thenIf(outline == Outline.None) { focusOutline(dropdownState, shape) }
             .outline(dropdownState, outline, shape)
             .defaultMinSize(minHeight = minSize.height)
             .onSizeChanged { componentWidth = it.width },
