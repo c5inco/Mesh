@@ -24,13 +24,11 @@ val baseName = "Mesh"
 kotlin {
     jvm("desktop")
 
-    jvmToolchain {
-        vendor = JvmVendorSpec.JETBRAINS
-        languageVersion = JavaLanguageVersion.of(21)
-    }
+    jvmToolchain(21)
     
     sourceSets {
         val desktopMain by getting
+        val desktopTest by getting
         
         commonMain.dependencies {
             implementation(compose.runtime)
@@ -44,6 +42,12 @@ kotlin {
             implementation(libs.room.runtime)
             implementation(libs.sqlite.bundled)
         }
+        
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.kotlin.test.junit)
+        }
+        
         desktopMain.dependencies {
             implementation(libs.jewel.int.ui.standalone)
 
@@ -52,6 +56,12 @@ kotlin {
             }
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.kotlinpoet)
+        }
+        
+        desktopTest.dependencies {
+            implementation(compose.desktop.currentOs)
+            implementation(compose.desktop.uiTestJUnit4)
+            implementation(libs.junit)
         }
     }
 }
