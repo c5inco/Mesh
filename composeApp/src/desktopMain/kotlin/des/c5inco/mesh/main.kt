@@ -25,6 +25,7 @@ fun main() {
             height = 768.dp
         )
 
+        // Load last auto-saved document on startup
         Runtime.getRuntime().addShutdownHook(Thread {
             shutdown(configuration)
         })
@@ -53,6 +54,7 @@ fun main() {
 private fun shutdown(
     configuration: AppConfiguration
 ) {
+    // Auto-save current state for recovery
     configuration.saveMeshState()
     runBlocking {
         configuration.saveMeshPoints()

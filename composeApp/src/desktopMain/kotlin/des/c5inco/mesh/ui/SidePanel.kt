@@ -94,6 +94,8 @@ fun SidePanel(
     meshPoints: List<List<Pair<Offset, Long>>> = emptyList(),
     showPoints: Boolean,
     constrainEdgePoints: Boolean,
+    currentDocumentName: String = "Untitled",
+    hasUnsavedChanges: Boolean = false,
     onCanvasWidthModeChange: () -> Unit = {},
     onCanvasWidthChange: (Int) -> Unit = {},
     onCanvasHeightModeChange: () -> Unit = {},
@@ -111,6 +113,10 @@ fun SidePanel(
     onCanvasBackgroundColorChange: (Long) -> Unit = { _ -> },
     onAddColor: (Color) -> Unit = { _ -> },
     onRemoveColor: (SavedColor) -> Unit = { _ -> },
+    onNewDocument: () -> Unit = {},
+    onOpenDocument: () -> Unit = {},
+    onSaveDocument: () -> Boolean = { false },
+    onSaveDocumentAs: () -> Boolean = { false },
     selectedColorPoint: Pair<Int, Int>? = null,
     modifier: Modifier = Modifier
 ) {
@@ -122,6 +128,22 @@ fun SidePanel(
             .background(JewelTheme.globalColors.panelBackground),
     ) {
         Column {
+            // Document section at the top
+            DocumentSection(
+                documentName = currentDocumentName,
+                hasUnsavedChanges = hasUnsavedChanges,
+                onNewDocument = onNewDocument,
+                onOpenDocument = onOpenDocument,
+                onSaveDocument = onSaveDocument,
+                onSaveDocumentAs = onSaveDocumentAs,
+            )
+
+            Divider(
+                orientation = Orientation.Horizontal,
+                thickness = 1.dp,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Column(
                 modifier = Modifier.padding(16.dp),
             ) {
@@ -643,5 +665,74 @@ private fun getModeIcon(mode: DimensionMode): DrawableResource {
         Res.drawable.modeFixed_dark
     } else {
         Res.drawable.modeFilled_dark
+    }
+}
+
+@Composable
+private fun DocumentSection(
+    documentName: String,
+    hasUnsavedChanges: Boolean,
+    onNewDocument: () -> Unit = {},
+    onOpenDocument: () -> Unit = {},
+    onSaveDocument: () -> Boolean = { false },
+    onSaveDocumentAs: () -> Boolean = { false },
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.padding(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "Document",
+                style = Typography.h4TextStyle(),
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        
+        Spacer(Modifier.height(12.dp))
+        
+        // Document name with unsaved indicator
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = documentName + if (hasUnsavedChanges) " •" else "",
+                fontSize = 13.sp,
+                color = JewelTheme.globalColors.text.normal,
+                fontWeight = if (hasUnsavedChanges) FontWeight.SemiBold else FontWeight.Normal
+            )
+        }
+        
+        Spacer(Modifier.height(12.dp))
+        
+        // Document controls
+        FlowRow(
+            maxItemsInEachRow = 3,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Link(
+                text = "New",
+                onClick = onNewDocument
+            )
+            Link(
+                text = "Open",
+                onClick = onOpenDocument
+            )
+            Link(
+                text = "Save",
+                onClick = { onSaveDocument() }
+            )
+            Link(
+                text = "Save As...",
+                onClick = { onSaveDocumentAs() }
+            )
+        }
     }
 }

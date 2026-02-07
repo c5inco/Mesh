@@ -25,7 +25,6 @@ kotlin {
     jvm("desktop")
 
     jvmToolchain {
-        vendor = JvmVendorSpec.JETBRAINS
         languageVersion = JavaLanguageVersion.of(21)
     }
     
