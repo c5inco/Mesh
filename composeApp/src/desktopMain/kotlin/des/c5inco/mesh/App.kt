@@ -13,9 +13,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.toAwtImage
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.Notifications
+import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.ui.GradientCanvas
 import des.c5inco.mesh.ui.SidePanel
 import kotlinx.coroutines.launch
@@ -33,7 +35,9 @@ fun App(
     val meshState by configuration.meshState.collectAsState()
 
     Row(
-        Modifier.fillMaxSize()
+        Modifier
+            .fillMaxSize()
+            .testTag(MeshTestTags.APP)
     ) {
         var selectedColorPoint: Pair<Int, Int>? by remember { mutableStateOf(null) }
         var exportScale by remember { mutableStateOf(1) }
@@ -62,7 +66,9 @@ fun App(
             onPointDrag = { row, col, point ->
                 configuration.updateMeshPoint(row, col, point)
             },
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .testTag(MeshTestTags.GRADIENT_CANVAS)
         )
         SidePanel(
             exportScale = exportScale,

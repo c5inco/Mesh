@@ -31,7 +31,8 @@ kotlin {
     
     sourceSets {
         val desktopMain by getting
-        
+        val desktopTest by getting
+
         commonMain.dependencies {
             implementation(compose.runtime)
             implementation(compose.foundation)
@@ -52,6 +53,12 @@ kotlin {
             }
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.kotlinpoet)
+        }
+        desktopTest.dependencies {
+            implementation(libs.spectre.core)
+            implementation(libs.spectre.testing)
+            implementation(libs.junit.jupiter)
+            implementation(libs.kotlinx.coroutines.swing)
         }
     }
 }
@@ -114,4 +121,28 @@ val renameDmg by tasks.registering(Copy::class) {
 
 tasks.assemble {
     dependsOn(renameDmg)
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+    systemProperty("java.awt.headless", "false")
+    systemProperty("skiko.renderApi", "SOFTWARE_COMPAT")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    if (System.getProperty("os.name").lowercase().contains("mac")) {
+        systemProperty("apple.awt.UIElement", "true")
+    }
+}
+
+tasks.named<Test>("desktopTest") {
+    useJUnitPlatform {
+        includeTags("spectre")
+    }
+    forkEvery = 1
+    maxParallelForks = 1
+}
+
+tasks.register("spectreTest") {
+    description = "Runs live Compose Desktop UI tests with Spectre."
+    group = "verification"
+    dependsOn("desktopTest")
 }

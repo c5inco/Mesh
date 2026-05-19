@@ -3,8 +3,10 @@ androidx-lifecycle = "2.10.0"
 compose-multiplatform = "1.10.0" # Must match Jewel
 jewel = "0.37.0-262.4852.51"
 junit = "4.13.2"
+junit-jupiter = "5.11.4"
+spectre = "0.1.0"
 kotlin = "2.3.21" # Must match Jewel
-kotlinKsp = "2.3.8"
+ksp = "2.3.8" # KSP 2.3.x is independent of Kotlin patch version; latest as of Room 2.8.4
 kotlinx-coroutines = "1.11.0"
 kotlinpoet = "2.3.0"
 kotlinx-serialization-json = "1.11.0"
@@ -15,6 +17,9 @@ sqlite = "2.6.2"
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit-jupiter" }
+spectre-core = { group = "dev.sebastiano.spectre", name = "spectre-core", version.ref = "spectre" }
+spectre-testing = { group = "dev.sebastiano.spectre", name = "spectre-testing", version.ref = "spectre" }
 androidx-lifecycle-viewmodel = { group = "org.jetbrains.androidx.lifecycle", name = "lifecycle-viewmodel", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-runtime-compose = { group = "org.jetbrains.androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
 jewel-int-ui-standalone = { group = "org.jetbrains.jewel", name = "jewel-int-ui-standalone", version.ref = "jewel" }
@@ -31,5 +36,5 @@ composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "compose-mu
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-ksp = { id = "com.google.devtools.ksp", version.ref = "kotlinKsp" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 room = { id = "androidx.room", version.ref = "room" }

@@ -38,6 +38,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -49,6 +50,7 @@ import des.c5inco.mesh.ui.components.ColorDropdown
 import des.c5inco.mesh.ui.components.ColorSwatch
 import des.c5inco.mesh.ui.components.DimensionInputField
 import des.c5inco.mesh.ui.components.OffsetInputField
+import des.c5inco.mesh.testing.MeshTestTags
 import kotlinx.coroutines.flow.collectLatest
 import mesh.composeapp.generated.resources.Res
 import mesh.composeapp.generated.resources.distributeEvenly_dark
@@ -150,7 +152,9 @@ fun SidePanel(
                     Spacer(Modifier.width(8.dp))
                     IconButton(
                         onClick = { showColorInput = true },
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier
+                            .size(14.dp)
+                            .testTag(MeshTestTags.ADD_CUSTOM_COLOR),
                     ) {
                         Icon(
                             key = AllIconsKeys.General.InlineAdd,
@@ -166,7 +170,7 @@ fun SidePanel(
                             showColorInput = false
                             onAddColor(it)
                         },
-                        modifier = Modifier.padding(vertical = 8.dp)
+                        modifier = Modifier.padding(vertical = 8.dp),
                     )
                 } else {
                     Spacer(Modifier.height(8.dp))
@@ -225,10 +229,13 @@ fun SidePanel(
                     title = "Points",
                     actions = {
                         Tooltip(tooltip = { Text("Export points as code") }) {
-                            IconButton(onClick = {
-                                onExportCode()
-                                focusManager.clearFocus()
-                            }) {
+                            IconButton(
+                                onClick = {
+                                    onExportCode()
+                                    focusManager.clearFocus()
+                                },
+                                modifier = Modifier.testTag(MeshTestTags.EXPORT_CODE),
+                            ) {
                                 Icon(
                                     painter = painterResource(resource = Res.drawable.featureCodeBlock_dark),
                                     contentDescription = "Export points as code"
@@ -260,7 +267,9 @@ fun SidePanel(
                         min = 2,
                         max = 10,
                         onUpdate = onUpdateTotalRows,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(MeshTestTags.ROWS_INPUT)
                     )
                     Spacer(Modifier.width(8.dp))
                     DimensionInputField(
@@ -270,7 +279,9 @@ fun SidePanel(
                         min = 2,
                         max = 10,
                         onUpdate = onUpdateTotalCols,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(MeshTestTags.COLS_INPUT)
                     )
                 }
                 Spacer(Modifier.height(12.dp))
@@ -278,6 +289,7 @@ fun SidePanel(
                     text = "Show points",
                     checked = showPoints,
                     onCheckedChange = { onTogglePoints() },
+                    modifier = Modifier.testTag(MeshTestTags.SHOW_POINTS),
                 )
                 CheckboxRow(
                     text = "Constrain edge points",
@@ -312,6 +324,7 @@ fun SidePanel(
                                     constrainY = constrainEdgePoints && (rowIdx == 0 || rowIdx == meshPoints.size - 1),
                                     colorId = point.second,
                                     availableColors = presetColors + customColors,
+                                    colorDropdownTestTag = MeshTestTags.pointColor(rowIdx, colIdx),
                                     onUpdatePoint = { (nextOffset, nextColor) ->
                                         onUpdateMeshPoint(rowIdx, colIdx, Pair(Offset(x = nextOffset.x, y = nextOffset.y), nextColor))
                                     },
@@ -429,6 +442,7 @@ private fun ColorInput(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
             modifier = Modifier
                 .focusRequester(focusRequester)
+                .testTag(MeshTestTags.CUSTOM_COLOR_INPUT)
                 .onFocusChanged { validate() }
                 .onKeyEvent {
                     when (it.key) {
@@ -471,6 +485,7 @@ private fun ColorPointRow(
     constrainY: Boolean,
     colorId: Long,
     availableColors: List<SavedColor> = emptyList(),
+    colorDropdownTestTag: String? = null,
     onUpdatePoint: (Pair<Offset, Long>) -> Unit = { _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -482,7 +497,8 @@ private fun ColorPointRow(
         ColorDropdown(
             selectedColorId = colorId,
             colors = availableColors,
-            onSelected = { onUpdatePoint(Pair(Offset(x = x, y = y), it)) }
+            onSelected = { onUpdatePoint(Pair(Offset(x = x, y = y), it)) },
+            modifier = colorDropdownTestTag?.let { Modifier.testTag(it) } ?: Modifier,
         )
         OffsetInputField(
             value = x,
