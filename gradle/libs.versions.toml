@@ -1,15 +1,15 @@
 [versions]
-androidx-lifecycle = "2.8.4"
-compose-multiplatform = "1.9.3" # Must match Jewel
-jewel = "0.32.1-253.28294.285"
+androidx-lifecycle = "2.10.0"
+compose-multiplatform = "1.10.0" # Must match Jewel
+jewel = "0.37.0-262.4852.51"
 junit = "4.13.2"
-kotlin = "2.2.10" # Must match Jewel
-kotlinKsp = "2.2.10-2.0.2"
-kotlinx-coroutines = "1.10.1"
-kotlinpoet = "2.1.0"
-kotlinx-serialization-json = "1.8.0"
-room = "2.7.0"
-sqlite = "2.5.0"
+kotlin = "2.3.21" # Must match Jewel
+kotlinKsp = "2.3.8"
+kotlinx-coroutines = "1.11.0"
+kotlinpoet = "2.3.0"
+kotlinx-serialization-json = "1.11.0"
+room = "2.8.4"
+sqlite = "2.6.2"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }

@@ -26,7 +26,7 @@ kotlin {
 
     jvmToolchain {
         vendor = JvmVendorSpec.JETBRAINS
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
     
     sourceSets {
