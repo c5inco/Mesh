@@ -28,7 +28,7 @@ kotlin {
         vendor = JvmVendorSpec.JETBRAINS
         languageVersion = JavaLanguageVersion.of(25)
     }
-    
+
     sourceSets {
         val desktopMain by getting
         val desktopTest by getting
@@ -80,7 +80,7 @@ compose.desktop {
 
             packageVersion = version.toString()
             packageName = baseName
-            description = baseName
+            description = "Create and edit smooth mesh gradients"
             vendor = "Chris Sinco"
             licenseFile = rootProject.file("LICENSE")
 
@@ -88,6 +88,7 @@ compose.desktop {
                 dockName = baseName
                 iconFile = rootProject.file("artwork/icon.icns")
                 bundleID = "des.c5inco.mesh"
+                appCategory = "public.app-category.graphics-design"
             }
         }
     }
@@ -99,28 +100,20 @@ val currentArch: String = when (val osArch = System.getProperty("os.arch")) {
     else -> error("Unsupported OS arch: $osArch")
 }
 
-/**
- * TODO: workaround for https://youtrack.jetbrains.com/issue/CMP-4976.
- */
 val renameDmg by tasks.registering(Copy::class) {
     group = "distribution"
-    description = "Rename the DMG file"
+    description = "Rename the packaged DMG to mesh-<version>-mac-<arch>.dmg"
 
-    val packageReleaseDmg = tasks.named<AbstractJPackageTask>("packageReleaseDmg")
-    // build/compose/binaries/main-release/dmg/*.dmg
-    val fromFile = packageReleaseDmg.map { task ->
+    val fromFile = tasks.named<AbstractJPackageTask>("packageDmg").map { task ->
         task.destinationDir.asFile.get().toPath().listDirectoryEntries("$baseName*.dmg").single()
     }
 
+    dependsOn("packageDmg")
     from(fromFile)
     into(fromFile.map { it.parent })
     rename {
-        "mesh-$currentArch-$version.dmg"
+        "mesh-$version-mac-$currentArch.dmg"
     }
-}
-
-tasks.assemble {
-    dependsOn(renameDmg)
 }
 
 tasks.withType<Test>().configureEach {

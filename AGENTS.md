@@ -47,8 +47,14 @@ The project follows a standard Kotlin Multiplatform structure:
 
 - **Build DMG (macOS):**
   ```bash
-  ./gradlew :composeApp:packageReleaseDmg
+  ./gradlew :composeApp:packageDmg
   ```
+
+- **Build signed & notarized DMG (macOS release):**
+  ```bash
+  ./gradlew :composeApp:notarizeDmg
+  ```
+  See [docs/RELEASING.md](docs/RELEASING.md) for signing and notarization setup.
 
 - **Run Linter/Check:**
   (Standard Gradle checks apply)

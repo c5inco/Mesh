@@ -50,6 +50,22 @@ Built as a [Compose Desktop](https://www.jetbrains.com/compose-multiplatform/) a
 ./gradlew :composeApp:run
 ```
 
+### Packaging (macOS)
+
+Build an unsigned DMG for local testing:
+
+```bash
+./gradlew :composeApp:packageDmg
+```
+
+Build a signed and notarized release DMG (requires local signing setup):
+
+```bash
+./gradlew :composeApp:notarizeDmg
+```
+
+See [docs/RELEASING.md](docs/RELEASING.md) for the full Compose Pi-style release flow.
+
 Or use the provided run configuration in `.run/desktopApp.run.xml`
 
 ## Usage
