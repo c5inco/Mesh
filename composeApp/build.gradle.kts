@@ -5,6 +5,7 @@ import org.gradle.jvm.toolchain.JavaToolchainService
 import org.gradle.jvm.toolchain.JvmVendorSpec
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
+import java.util.Properties
 import kotlin.io.path.listDirectoryEntries
 
 plugins {
@@ -77,6 +78,19 @@ room {
     schemaDirectory("$projectDir/schemas")
 }
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { localProperties.load(it) }
+}
+
+fun localReleaseProperty(name: String): String? =
+    localProperties.getProperty(name)?.trim()?.takeIf { value -> value.isNotEmpty() }
+
+fun releaseProperty(name: String): String? =
+    localReleaseProperty(name)
+        ?: providers.gradleProperty(name).orNull?.trim()?.takeIf { value -> value.isNotEmpty() }
+
 val desktopJavaHome = extensions.getByType<JavaToolchainService>()
     .launcherFor {
         languageVersion.set(desktopJvmVersion)
@@ -103,6 +117,15 @@ compose.desktop {
                 iconFile = rootProject.file("artwork/icon.icns")
                 bundleID = "des.c5inco.mesh"
                 appCategory = "public.app-category.graphics-design"
+
+                signing {
+                    releaseProperty("compose.desktop.mac.sign")?.toBooleanStrictOrNull()?.let {
+                        sign.set(it)
+                    }
+                    releaseProperty("compose.desktop.mac.signing.identity")?.let {
+                        identity.set(it)
+                    }
+                }
             }
         }
     }
