@@ -3,8 +3,11 @@
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.jvm.toolchain.JavaToolchainService
 import org.gradle.jvm.toolchain.JvmVendorSpec
+import org.gradle.process.ExecOperations
+import org.gradle.kotlin.dsl.support.serviceOf
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
+import org.jetbrains.compose.desktop.application.tasks.AbstractNotarizationTask
 import java.util.Properties
 import kotlin.io.path.listDirectoryEntries
 
@@ -91,6 +94,12 @@ fun releaseProperty(name: String): String? =
     localReleaseProperty(name)
         ?: providers.gradleProperty(name).orNull?.trim()?.takeIf { value -> value.isNotEmpty() }
 
+val macNotarizationKeychainProfile = releaseProperty("compose.desktop.mac.notarization.keychainProfile")
+val macNotarizationKeychainPath = releaseProperty("compose.desktop.mac.notarization.keychainPath")
+
+fun AbstractJPackageTask.packagedDmg(): java.io.File =
+    destinationDir.asFile.get().toPath().listDirectoryEntries("$baseName*.dmg").single().toFile()
+
 val desktopJavaHome = extensions.getByType<JavaToolchainService>()
     .launcherFor {
         languageVersion.set(desktopJvmVersion)
@@ -127,6 +136,55 @@ compose.desktop {
                     }
                 }
             }
+        }
+    }
+}
+
+tasks.withType<AbstractNotarizationTask>().configureEach {
+    group = "compose desktop"
+    description = "Notarize the packaged DMG with a local notarytool keychain profile."
+
+    val execOperations = serviceOf<ExecOperations>()
+    val packageTaskName = when (name) {
+        "notarizeReleaseDmg" -> "packageReleaseDmg"
+        else -> "packageDmg"
+    }
+
+    dependsOn(packageTaskName)
+    actions.clear()
+
+    doFirst {
+        require(!macNotarizationKeychainProfile.isNullOrEmpty()) {
+            """
+            Missing notarytool keychain profile for $name.
+            Set compose.desktop.mac.notarization.keychainProfile in local.properties or ~/.gradle/gradle.properties.
+            See docs/RELEASING.md.
+            """.trimIndent()
+        }
+    }
+
+    doLast {
+        val dmg = tasks.named<AbstractJPackageTask>(packageTaskName).get().packagedDmg()
+        val submitCommand = mutableListOf(
+            "xcrun",
+            "notarytool",
+            "submit",
+            dmg.absolutePath,
+            "--keychain-profile",
+            macNotarizationKeychainProfile!!,
+            "--wait",
+            "--timeout",
+            "30m",
+        )
+        macNotarizationKeychainPath?.let { keychainPath ->
+            submitCommand += listOf("--keychain", keychainPath)
+        }
+
+        execOperations.exec {
+            commandLine(submitCommand)
+        }
+        execOperations.exec {
+            commandLine("xcrun", "stapler", "staple", dmg.absolutePath)
         }
     }
 }
