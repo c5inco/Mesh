@@ -1,5 +1,8 @@
 @file:Suppress("UnstableApiUsage")
 
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.jvm.toolchain.JavaToolchainService
+import org.gradle.jvm.toolchain.JvmVendorSpec
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import kotlin.io.path.listDirectoryEntries
@@ -21,12 +24,15 @@ repositories {
 version = "1.0.0"
 val baseName = "Mesh"
 
+val desktopJvmVersion = JavaLanguageVersion.of(25)
+val desktopJvmVendor = JvmVendorSpec.JETBRAINS
+
 kotlin {
     jvm("desktop")
 
     jvmToolchain {
-        vendor = JvmVendorSpec.JETBRAINS
-        languageVersion = JavaLanguageVersion.of(25)
+        vendor = desktopJvmVendor
+        languageVersion = desktopJvmVersion
     }
 
     sourceSets {
@@ -71,9 +77,17 @@ room {
     schemaDirectory("$projectDir/schemas")
 }
 
+val desktopJavaHome = extensions.getByType<JavaToolchainService>()
+    .launcherFor {
+        languageVersion.set(desktopJvmVersion)
+        vendor.set(desktopJvmVendor)
+    }
+    .map { launcher -> launcher.metadata.installationPath.asFile.absolutePath }
+
 compose.desktop {
     application {
         mainClass = "des.c5inco.mesh.MainKt"
+        javaHome = desktopJavaHome.get()
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg)
