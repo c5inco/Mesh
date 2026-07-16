@@ -95,7 +95,7 @@ class MeshAppFixture(
         val deadline = System.nanoTime() + startupTimeout.inWholeNanoseconds
         while (System.nanoTime() < deadline) {
             bootstrapTracker.refresh()
-            val tracked = bootstrapTracker.trackedWindows.firstOrNull {
+            val tracked = bootstrapTracker.trackedWindows.value.firstOrNull {
                 runCatching { (it.window as? java.awt.Frame)?.title }.getOrNull() == title
             }
             if (tracked != null) {
