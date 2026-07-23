@@ -1,0 +1,80 @@
+name: Package Artifacts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package_deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: jetbrains
+          cache: 'gradle'
+        # to avoid running into rate limit errors
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package
+        run: ./gradlew packageDeb;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "artifact-deb"
+          path: "composeApp/build/compose/binaries/main/deb/mesh_*.deb"
+
+  package_dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: jetbrains
+          cache: 'gradle'
+        # to avoid running into rate limit errors
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package
+        run: ./gradlew packageDmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "artifact-dmg"
+          path: "composeApp/build/compose/binaries/main/dmg/Mesh-*.dmg"
+
+  package_exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: jetbrains
+          cache: 'gradle'
+        # to avoid running into rate limit errors
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package
+        run: ./gradlew packageExe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "artifact-exe"
+          path: "composeApp/build/compose/binaries/main/exe/Mesh-*.exe"
