@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import des.c5inco.mesh.common.toHexStringNoHash
 import model.SavedColor
 import model.toColor
+import org.jetbrains.jewel.foundation.ExperimentalJewelApi
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.foundation.theme.LocalContentColor
 import org.jetbrains.jewel.foundation.theme.LocalTextStyle
@@ -108,6 +109,7 @@ fun ColorDropdown(
 }
 
 // Forked from Jewel Dropdown
+@OptIn(ExperimentalJewelApi::class)
 @Composable
 private fun DropdownButton(
     modifier: Modifier = Modifier,

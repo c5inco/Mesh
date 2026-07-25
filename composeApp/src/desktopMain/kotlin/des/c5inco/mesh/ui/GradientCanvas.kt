@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 import model.SavedColor
 import model.findColor
 import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.theme.colorPalette
 import kotlin.math.roundToInt
@@ -103,7 +104,8 @@ fun GradientCanvas(
             .background(if (canvasBackgroundColor > -1L) {
                 availableColors.findColor(canvasBackgroundColor)
             } else {
-                JewelTheme.colorPalette.gray(1)
+                JewelTheme.colorPalette.grayOrNull(1)
+                    ?: requireNotNull(IntUiDarkTheme.colors.grayOrNull(1))
             })
             .fillMaxSize()
     ) {

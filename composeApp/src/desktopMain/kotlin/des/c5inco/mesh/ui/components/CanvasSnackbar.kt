@@ -21,10 +21,11 @@ import des.c5inco.mesh.common.ExpressiveMotionTokens.SpringFastSpatialDamping
 import des.c5inco.mesh.common.ExpressiveMotionTokens.SpringFastSpatialStiffness
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.foundation.theme.LocalContentColor
 import org.jetbrains.jewel.foundation.theme.LocalTextStyle
 import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
-import org.jetbrains.jewel.ui.component.Typography
+import org.jetbrains.jewel.ui.typography
 
 @Composable
 fun CanvasSnackbar(
@@ -66,8 +67,8 @@ fun CanvasSnackbar(
         modifier = modifier
     ) {
         CompositionLocalProvider(
-            LocalContentColor provides IntUiDarkTheme.colors.gray(12),
-            LocalTextStyle provides Typography.labelTextStyle().copy(fontSize = 11.sp),
+            LocalContentColor provides requireNotNull(IntUiDarkTheme.colors.grayOrNull(12)),
+            LocalTextStyle provides JewelTheme.typography.labelTextStyle.copy(fontSize = 11.sp),
         ) {
             Box(
                 modifier =
@@ -77,10 +78,13 @@ fun CanvasSnackbar(
                         ambientColor = Color(0x66000000),
                         spotColor = Color.Transparent,
                     )
-                        .background(color = IntUiDarkTheme.colors.gray(2), shape = RoundedCornerShape(4.dp))
+                        .background(
+                            color = requireNotNull(IntUiDarkTheme.colors.grayOrNull(2)),
+                            shape = RoundedCornerShape(4.dp),
+                        )
                         .border(
                             width = 1.dp,
-                            color = IntUiDarkTheme.colors.gray(3),
+                            color = requireNotNull(IntUiDarkTheme.colors.grayOrNull(3)),
                             shape = RoundedCornerShape(4.dp),
                         )
                         .padding(vertical = 9.dp, horizontal = 12.dp)

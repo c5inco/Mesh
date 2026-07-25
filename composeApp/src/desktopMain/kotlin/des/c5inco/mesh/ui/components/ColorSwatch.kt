@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.unit.dp
 import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.theme.colorPalette
 
 @Composable
@@ -44,7 +45,12 @@ fun ColorSwatch(
                         )
                     }
                 }
-                .border(1.dp, JewelTheme.colorPalette.gray(7), RoundedCornerShape(4.dp))
+                .border(
+                    1.dp,
+                    JewelTheme.colorPalette.grayOrNull(7)
+                        ?: requireNotNull(IntUiDarkTheme.colors.grayOrNull(7)),
+                    RoundedCornerShape(4.dp),
+                )
                 .fillMaxSize()
             )
         } else Spacer(Modifier.fillMaxSize().background(color))

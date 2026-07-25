@@ -62,6 +62,7 @@ import model.toColor
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.Orientation
 import org.jetbrains.jewel.ui.Outline
 import org.jetbrains.jewel.ui.component.CheckboxRow
@@ -74,9 +75,9 @@ import org.jetbrains.jewel.ui.component.Slider
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
 import org.jetbrains.jewel.ui.component.Tooltip
-import org.jetbrains.jewel.ui.component.Typography
 import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
+import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.ui.theme.colorPalette
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
@@ -298,7 +299,8 @@ fun SidePanel(
                 )
             }
 
-            val selectedPointColor = JewelTheme.colorPalette.blue(6)
+            val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
+                ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
             val selectedHighlightHeight = 24.dp
 
             Column(
@@ -362,7 +364,7 @@ private fun SectionHeader(
     ) {
         Text(
             text = title,
-            style = Typography.h4TextStyle(),
+            style = JewelTheme.typography.h4TextStyle,
             fontWeight = FontWeight.SemiBold
         )
         Row {
