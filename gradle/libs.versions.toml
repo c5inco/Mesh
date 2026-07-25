@@ -1,11 +1,12 @@
 [versions]
 androidx-lifecycle = "2.10.0"
-compose-multiplatform = "1.10.3" # Must stay on Jewel's supported Compose 1.10 line
-jewel = "0.37.0-262.4852.51"
+compose-multiplatform = "1.11.0" # Must stay on Jewel's supported Compose 1.11 line
+jewel = "0.39.1-262.9437.29"
 junit = "4.13.2"
 junit-jupiter = "5.11.4"
+junit-platform = "1.11.4"
 spectre = "0.2.1"
-kotlin = "2.3.21" # Must match Jewel
+kotlin = "2.3.21" # Jewel requires Kotlin 2.3.20 or newer
 ksp = "2.3.8" # KSP 2.3.x is independent of Kotlin patch version; latest as of Room 2.8.4
 kotlinx-coroutines = "1.11.0"
 kotlinpoet = "2.3.0"
@@ -18,10 +19,15 @@ kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotl
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit-jupiter" }
+junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher", version.ref = "junit-platform" }
 spectre-core = { group = "dev.sebastiano.spectre", name = "spectre-core", version.ref = "spectre" }
 spectre-testing = { group = "dev.sebastiano.spectre", name = "spectre-testing", version.ref = "spectre" }
 androidx-lifecycle-viewmodel = { group = "org.jetbrains.androidx.lifecycle", name = "lifecycle-viewmodel", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-runtime-compose = { group = "org.jetbrains.androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+compose-runtime = { group = "org.jetbrains.compose.runtime", name = "runtime", version.ref = "compose-multiplatform" }
+compose-foundation = { group = "org.jetbrains.compose.foundation", name = "foundation", version.ref = "compose-multiplatform" }
+compose-ui = { group = "org.jetbrains.compose.ui", name = "ui", version.ref = "compose-multiplatform" }
+compose-components-resources = { group = "org.jetbrains.compose.components", name = "components-resources", version.ref = "compose-multiplatform" }
 jewel-int-ui-standalone = { group = "org.jetbrains.jewel", name = "jewel-int-ui-standalone", version.ref = "jewel" }
 kotlinx-coroutines-swing = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
 kotlinpoet = { group = "com.squareup", name = "kotlinpoet", version.ref = "kotlinpoet" }
