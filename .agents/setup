@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly GRADLE_JBR_HOME="$HOME/.jdks/jbr-21.0.11-b1163.116"
+readonly TOOLCHAIN_JBR_HOME="$HOME/.jdks/jbr-25.0.3-b508.16"
+
+install_jbr() {
+    local version="$1"
+    local build="$2"
+    local destination="$3"
+
+    if [[ -x "$destination/bin/java" ]]; then
+        return
+    fi
+
+    local archive_name="jbrsdk-$version-linux-x64-b$build.tar.gz"
+    local archive
+    archive="$(mktemp --suffix=.tar.gz)"
+    echo "Installing JetBrains Runtime SDK $version-b$build..."
+    curl --fail --location --retry 3 \
+        --output "$archive" \
+        "https://cache-redirector.jetbrains.com/intellij-jbr/$archive_name"
+    mkdir -p "$destination"
+    tar -xzf "$archive" --strip-components=1 -C "$destination"
+    rm -f "$archive"
+}
+
+if ! command -v Xvfb >/dev/null || ! command -v xdotool >/dev/null; then
+    echo "Installing desktop test dependencies..."
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends xvfb xdotool xauth
+fi
+
+mkdir -p "$HOME/.jdks"
+install_jbr "21.0.11" "1163.116" "$GRADLE_JBR_HOME"
+install_jbr "25.0.3" "508.16" "$TOOLCHAIN_JBR_HOME"
+
+profile_marker="# Mesh Gradle runtime"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    if grep -Fqx "# Mesh JetBrains Runtime" "$HOME/.bash_profile" 2>/dev/null; then
+        sed -i '/^# Mesh JetBrains Runtime$/,+2d' "$HOME/.bash_profile"
+    fi
+    cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+export JAVA_HOME="$GRADLE_JBR_HOME"
+export PATH="\$JAVA_HOME/bin:\$PATH"
+EOF
+fi
+
+echo "Warming the Gradle wrapper and dependency cache..."
+JAVA_HOME="$GRADLE_JBR_HOME" PATH="$GRADLE_JBR_HOME/bin:$PATH" ./gradlew --version >/dev/null
+echo "Orb setup complete."

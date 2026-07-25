@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This project has no persistent services to reconnect after an orb resumes.
+exit 0
