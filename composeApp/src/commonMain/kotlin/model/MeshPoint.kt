@@ -62,3 +62,75 @@ fun List<List<Pair<Offset, Long>>>.toSavedMeshPoints(): List<MeshPoint> {
     }
     return meshPoints
 }
+
+fun generateMeshPointGrid(
+    rows: Int,
+    cols: Int,
+    colorIds: List<Long>,
+): List<List<Pair<Offset, Long>>> {
+    require(rows >= 2) { "A mesh requires at least two rows" }
+    require(cols >= 2) { "A mesh requires at least two columns" }
+    require(colorIds.isNotEmpty()) { "A mesh requires at least one color" }
+
+    return List(rows) { row ->
+        val y = row.toFloat() / (rows - 1)
+        val colorId = colorIds[row % colorIds.size]
+
+        List(cols) { col ->
+            val x = col.toFloat() / (cols - 1)
+            Offset(x, y) to colorId
+        }
+    }
+}
+
+fun List<List<Pair<Offset, Long>>>.withUpdatedMeshPoint(
+    row: Int,
+    col: Int,
+    point: Pair<Offset, Long>,
+    constrainEdges: Boolean,
+): List<List<Pair<Offset, Long>>> {
+    val updatedRow = this[row].toMutableList()
+    val offset = if (constrainEdges) {
+        Offset(
+            x = when (col) {
+                0 -> 0f
+                updatedRow.lastIndex -> 1f
+                else -> point.first.x
+            },
+            y = when (row) {
+                0 -> 0f
+                lastIndex -> 1f
+                else -> point.first.y
+            },
+        )
+    } else {
+        point.first
+    }
+
+    updatedRow[col] = offset to point.second
+    return mapIndexed { index, existingRow ->
+        if (index == row) updatedRow.toList() else existingRow
+    }
+}
+
+fun List<List<Pair<Offset, Long>>>.distributedEvenly(
+    rows: Int,
+    cols: Int,
+): List<List<Pair<Offset, Long>>> =
+    mapIndexed { row, points ->
+        val y = row.toFloat() / (rows - 1)
+        List(cols) { col ->
+            val x = col.toFloat() / (cols - 1)
+            Offset(x, y) to points[col].second
+        }
+    }
+
+fun List<List<Pair<Offset, Long>>>.replaceColor(
+    colorId: Long,
+    replacementColorId: Long,
+): List<List<Pair<Offset, Long>>> =
+    map { row ->
+        row.map { point ->
+            if (point.second == colorId) point.first to replacementColorId else point
+        }
+    }

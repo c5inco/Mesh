@@ -1,25 +1,37 @@
 package des.c5inco.mesh.data
 
-import androidx.compose.runtime.toMutableStateList
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import com.squareup.kotlinpoet.CodeBlock
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
+import data.DataRepository
 import data.DimensionMode
 import des.c5inco.mesh.common.toHexStringNoHash
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import model.SavedColor
+import model.distributedEvenly
 import model.findColor
+import model.generateMeshPointGrid
+import model.replaceColor
 import model.toOffsetGrid
 import model.toSavedMeshPoints
+import model.withUpdatedMeshPoint
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
@@ -53,7 +65,7 @@ private val defaultColorPoints = listOf(
 )
 
 class AppConfiguration(
-    private val repository: AppDataRepository,
+    private val repository: DataRepository,
     showPoints: Boolean = false,
     private var constrainEdgePoints: Boolean = true,
 ) {
@@ -87,20 +99,26 @@ class AppConfiguration(
 
     var meshState = MutableStateFlow(repository.loadMeshState())
 
-    var meshPoints = mutableListOf<List<Pair<Offset, Long>>>().toMutableStateList()
-        private set
+    val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
+    private val meshPointsMutex = Mutex()
 
-    init {
-        scope.launch {
-            val initialMeshPoints = repository.getMeshPoints().first()
-            println("Loaded points: $initialMeshPoints")
-            meshPoints = if (initialMeshPoints.isEmpty()) {
-                    defaultColorPoints
-                } else {
-                    initialMeshPoints.toOffsetGrid()
-                }.toMutableStateList()
+    private val loadMeshPoints = scope.async {
+        val initialMeshPoints = repository.getMeshPoints().first()
+        println("Loaded points: $initialMeshPoints")
+        val loadedPoints = if (initialMeshPoints.isEmpty()) {
+            defaultColorPoints
+        } else {
+            initialMeshPoints.toOffsetGrid()
+        }
+
+        meshPointsMutex.withLock {
+            meshPoints.clear()
+            meshPoints.addAll(loadedPoints)
         }
     }
+
+    @Volatile
+    private var generateMeshPointsJob: Deferred<Unit>? = null
 
     val uiState = MutableStateFlow(
         AppUiState(
@@ -178,101 +196,74 @@ class AppConfiguration(
     }
 
     private fun generateMeshPoints() {
-        scope.launch {
-            meshPoints.clear()
-            val allColors = availableColors.first()
-            val currentMeshState = meshState.value
+        val requestedMeshState = meshState.value
+        val previousJob = generateMeshPointsJob
+        generateMeshPointsJob = scope.async {
+            loadMeshPoints.await()
+            val allColors = availableColors.first { it.isNotEmpty() }
+            val generatedPoints = generateMeshPointGrid(
+                rows = requestedMeshState.rows,
+                cols = requestedMeshState.cols,
+                colorIds = allColors.map(SavedColor::uid),
+            )
 
-            repeat(currentMeshState.rows) { rowIdx ->
-                val newColorIndex =
-                    allColors[rowIdx % allColors.size].uid
-
-                val newPoints = mutableListOf<Pair<Offset, Long>>()
-
-                // Calculate the Y position for this row
-                val yPosition = rowIdx.toFloat() / (currentMeshState.rows - 1)
-
-                // Iterate through columns to create points
-                repeat(currentMeshState.cols) { colIdx ->
-                    // Calculate the X position for this column
-                    val xPosition = colIdx.toFloat() / (currentMeshState.cols - 1)
-
-                    newPoints.add(
-                        Pair(Offset(xPosition, yPosition), newColorIndex)
-                    )
-                }
-
-                meshPoints.add(newPoints.toList())
+            meshPointsMutex.withLock {
+                meshPoints.clear()
+                meshPoints.addAll(generatedPoints)
             }
         }
+        previousJob?.cancel()
     }
 
     fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) {
-        val colorPointsInRow = meshPoints[row].toMutableList()
-
-        var newX = point.first.x
-        var newY = point.first.y
-
-        if (constrainEdgePoints) {
-            newX = when (col) {
-                0 -> 0f
-                colorPointsInRow.size - 1 -> 1f
-                else -> newX
-            }
-            newY = when (row) {
-                0 -> 0f
-                meshPoints.size - 1 -> 1f
-                else -> newY
-            }
-        }
-
-        val newPoint = Pair(Offset(x = newX, y = newY), point.second)
-        colorPointsInRow.set(index = col, element = newPoint)
-
-        meshPoints.set(index = row, element = colorPointsInRow.toList())
+        val updatedPoints = meshPoints.withUpdatedMeshPoint(
+            row = row,
+            col = col,
+            point = point,
+            constrainEdges = constrainEdgePoints,
+        )
+        meshPoints[row] = updatedPoints[row]
     }
 
     fun distributeMeshPointsEvenly() {
         val currentMeshState = meshState.value
-        val newPoints = meshPoints.mapIndexed { rowIdx, currentPoints ->
-            val newPoints = mutableListOf<Pair<Offset, Long>>()
-
-            // Calculate the Y position for this row
-            val yPosition = rowIdx.toFloat() / (currentMeshState.rows - 1)
-
-            // Iterate through columns to create points
-            repeat(currentMeshState.cols) { colIdx ->
-                // Calculate the X position for this column
-                val xPosition = colIdx.toFloat() / (currentMeshState.cols - 1)
-
-                newPoints.add(
-                    Pair(Offset(xPosition, yPosition), currentPoints[colIdx].second)
-                )
-            }
-
-            newPoints.toList()
-        }
+        val newPoints = meshPoints.distributedEvenly(
+            rows = currentMeshState.rows,
+            cols = currentMeshState.cols,
+        )
         meshPoints.clear()
         meshPoints.addAll(newPoints)
     }
 
     suspend fun saveMeshPoints() {
-        val points = meshPoints.toSavedMeshPoints()
-        println("Saved: $points")
-        repository.saveMeshPoints(points)
+        loadMeshPoints.await()
+
+        while (true) {
+            val pendingGeneration = generateMeshPointsJob
+            try {
+                pendingGeneration?.await()
+            } catch (error: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                if (pendingGeneration === generateMeshPointsJob) throw error
+                continue
+            }
+            if (pendingGeneration === generateMeshPointsJob) break
+        }
+
+        meshPointsMutex.withLock {
+            val points = meshPoints.toSavedMeshPoints()
+            println("Saved: $points")
+            repository.saveMeshPoints(points)
+        }
     }
 
     fun removeColorFromMeshPoints(colorToRemove: Long) {
-        meshPoints.forEachIndexed { idx, points ->
-            val newPoints = points.map { point ->
-                if (point.second == colorToRemove) {
-                    // Reset to transparent
-                    Pair(point.first, -1L)
-                } else {
-                    point
-                }
-            }
-            meshPoints.set(index = idx, element = newPoints.toList())
+        val updatedPoints = meshPoints.replaceColor(
+            colorId = colorToRemove,
+            replacementColorId = -1L,
+        )
+        updatedPoints.forEachIndexed { index, row ->
+            meshPoints[index] = row
         }
     }
 

@@ -229,6 +229,22 @@ tasks.named<Test>("desktopTest") {
     maxParallelForks = 1
 }
 
+val desktopUnitTest by tasks.registering(Test::class) {
+    description = "Runs desktop unit tests without the live Spectre UI tests."
+    group = "verification"
+
+    val desktopTest = tasks.named<Test>("desktopTest").get()
+    testClassesDirs = desktopTest.testClassesDirs
+    classpath = desktopTest.classpath
+    useJUnitPlatform {
+        excludeTags("spectre")
+    }
+}
+
+tasks.named("check") {
+    dependsOn(desktopUnitTest)
+}
+
 tasks.register("spectreTest") {
     description = "Runs live Compose Desktop UI tests with Spectre."
     group = "verification"
