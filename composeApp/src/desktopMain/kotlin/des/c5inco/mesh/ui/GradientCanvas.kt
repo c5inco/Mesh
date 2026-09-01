@@ -57,7 +57,6 @@ import kotlin.math.roundToInt
 fun GradientCanvas(
     exportGraphicsLayer: GraphicsLayer,
     exportScale: Int,
-    resolution: Int,
     canvasWidthMode: DimensionMode,
     canvasWidth: Int,
     canvasHeightMode: DimensionMode,
@@ -214,9 +213,6 @@ fun GradientCanvas(
                             }
                         },
                         blurLevel = (blurLevel * MAX_BLUR_LEVEL).roundToInt(),
-                        resolutionX = resolution,
-                        resolutionY = resolution,
-                        showPoints = showPoints
                     )
             ) {
                 Spacer(Modifier.fillMaxSize())

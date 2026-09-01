@@ -2,7 +2,7 @@
 
 # Mesh
 
-A simple tool to create and edit mesh gradients. Mesh gradients are drawn with the wonderful [implementation](https://gist.github.com/sinasamaki/05725557c945c5329fdba4a3494aaecb?ref=sinasamaki.com) by [@sinasamaki](https://www.sinasamaki.com/mesh-gradients-in-jetpack-compose/)
+A simple tool to create and edit mesh gradients. Mesh gradients are drawn with Compose Multiplatform's [`MeshGradientPainter`](https://developer.android.com/develop/ui/compose/graphics/draw/mesh-gradient).
 
 Built as a [Compose Desktop](https://www.jetbrains.com/compose-multiplatform/) app, with the JetBrains [Jewel UI standalone toolkit](https://github.com/JetBrains/jewel).
 
@@ -77,7 +77,7 @@ Or use the provided run configuration in `.run/desktopApp.run.xml`
 - **Add colors** using the color picker in the side panel
 - **Adjust grid** using the Rows/Cols inputs
 - **Toggle constraints** to lock edge points
-- **Export points** points as a list of `Pair<Offset, Color>` objects to use in [@sinasamaki](https://gist.github.com/sinasamaki/05725557c945c5329fdba4a3494aaecb?ref=sinasamaki.com)'s Modifier recipe
+- **Export points** as a list of `Pair<Offset, Color>` objects for use with `MeshGradientPainter`
 - **Export as an image** at 1x, 2x, or 3x scale
 
 ### Color Management

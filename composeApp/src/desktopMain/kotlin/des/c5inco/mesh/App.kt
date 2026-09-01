@@ -47,7 +47,6 @@ fun App(
         GradientCanvas(
             exportGraphicsLayer = exportGraphicsLayer,
             exportScale = exportScale,
-            resolution = meshState.resolution,
             canvasWidthMode = meshState.canvasWidthMode,
             canvasWidth = meshState.canvasWidth,
             canvasHeightMode = meshState.canvasHeightMode,

@@ -79,7 +79,9 @@ class AppConfiguration(
                 val desktopPath = System.getProperty("user.home") + File.separator + "Desktop"
                 val scaleSuffix = if (scale == 1) "" else "@${scale}x"
                 val filename = "mesh-export$scaleSuffix.png"
-                val file = File(desktopPath, filename) // You can change the filename and extension
+                val desktop = File(desktopPath)
+                desktop.mkdirs()
+                val file = File(desktop, filename)
 
                 ImageIO.write(image, "png", file)
                 Notifications.send("🖼 Exported $filename to ${file.absolutePath.substringBeforeLast("/")}")

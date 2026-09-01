@@ -1,6 +1,6 @@
 [versions]
 androidx-lifecycle = "2.10.0"
-compose-multiplatform = "1.11.0" # Must stay on Jewel's supported Compose 1.11 line
+compose-multiplatform = "1.12.0" # MeshGradientPainter requires Compose UI 1.12+
 jewel = "0.39.1-262.9437.29"
 junit = "4.13.2"
 junit-jupiter = "5.11.4"

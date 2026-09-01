@@ -4,7 +4,7 @@ This document provides context and guidelines for AI agents working on the **Mes
 
 ## Project Overview
 
-**Mesh** is a desktop application for creating and editing smooth mesh gradients. It allows users to manipulate control points, manage color palettes, and export gradients as code (Kotlin) or images.
+**Mesh** is a desktop application for creating and editing smooth mesh gradients. It allows users to manipulate control points, manage color palettes, and export gradients as code (Kotlin) or images. Gradients are rendered with Compose Multiplatform's `MeshGradientPainter`.
 
 ## Tech Stack
 

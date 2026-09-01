@@ -249,7 +249,8 @@ fun SidePanel(
                                 onClick = {
                                     onDistributeMeshPointsEvenly()
                                     focusManager.clearFocus()
-                                }
+                                },
+                                modifier = Modifier.testTag(MeshTestTags.DISTRIBUTE_EVENLY),
                             ) {
                                 Icon(
                                     painter = painterResource(resource = Res.drawable.distributeEvenly_dark),
@@ -296,6 +297,7 @@ fun SidePanel(
                     text = "Constrain edge points",
                     checked = constrainEdgePoints,
                     onCheckedChange = { onToggleConstrainingEdgePoints() },
+                    modifier = Modifier.testTag(MeshTestTags.CONSTRAIN_EDGE_POINTS),
                 )
             }
 
@@ -327,6 +329,8 @@ fun SidePanel(
                                     colorId = point.second,
                                     availableColors = presetColors + customColors,
                                     colorDropdownTestTag = MeshTestTags.pointColor(rowIdx, colIdx),
+                                    offsetXTestTag = MeshTestTags.pointOffsetX(rowIdx, colIdx),
+                                    offsetYTestTag = MeshTestTags.pointOffsetY(rowIdx, colIdx),
                                     onUpdatePoint = { (nextOffset, nextColor) ->
                                         onUpdateMeshPoint(rowIdx, colIdx, Pair(Offset(x = nextOffset.x, y = nextOffset.y), nextColor))
                                     },
@@ -488,6 +492,8 @@ private fun ColorPointRow(
     colorId: Long,
     availableColors: List<SavedColor> = emptyList(),
     colorDropdownTestTag: String? = null,
+    offsetXTestTag: String? = null,
+    offsetYTestTag: String? = null,
     onUpdatePoint: (Pair<Offset, Long>) -> Unit = { _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -507,14 +513,18 @@ private fun ColorPointRow(
             enabled = !constrainX,
             paramName = "X",
             onUpdate = { onUpdatePoint(Pair(Offset(x = it, y = y), colorId)) },
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .then(offsetXTestTag?.let { Modifier.testTag(it) } ?: Modifier),
         )
         OffsetInputField(
             value = y,
             enabled = !constrainY,
             paramName = "Y",
             onUpdate = { onUpdatePoint(Pair(Offset(x = x, y = it), colorId)) },
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .then(offsetYTestTag?.let { Modifier.testTag(it) } ?: Modifier),
         )
     }
 }
@@ -572,17 +582,24 @@ private fun CanvasSection(
                             onClick = {
                                 onCanvasWidthModeChange()
                                 focusManager.clearFocus()
-                            }
+                            },
+                            modifier = Modifier.testTag(MeshTestTags.CANVAS_WIDTH_MODE),
                         ) {
                             Icon(
                                 painter = painterResource(getModeIcon(canvasWidthMode)),
-                                contentDescription = null
+                                contentDescription = if (canvasWidthMode == DimensionMode.Fixed) {
+                                    "Canvas width mode Fixed"
+                                } else {
+                                    "Canvas width mode Fill"
+                                },
                             )
                         }
                     }
                 },
                 onUpdate = onCanvasWidthChange,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag(MeshTestTags.CANVAS_WIDTH_INPUT),
             )
             DimensionInputField(
                 value = canvasHeight,
@@ -597,17 +614,24 @@ private fun CanvasSection(
                             onClick = {
                                 onCanvasHeightModeChange()
                                 focusManager.clearFocus()
-                            }
+                            },
+                            modifier = Modifier.testTag(MeshTestTags.CANVAS_HEIGHT_MODE),
                         ) {
                             Icon(
                                 painter = painterResource(getModeIcon(canvasHeightMode)),
-                                contentDescription = null
+                                contentDescription = if (canvasHeightMode == DimensionMode.Fixed) {
+                                    "Canvas height mode Fixed"
+                                } else {
+                                    "Canvas height mode Fill"
+                                },
                             )
                         }
                     }
                 },
                 onUpdate = onCanvasHeightChange,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag(MeshTestTags.CANVAS_HEIGHT_INPUT),
             )
         }
 
@@ -621,11 +645,13 @@ private fun CanvasSection(
         ) {
             Link(
                 text = "Export",
-                onClick = onExport
+                onClick = onExport,
+                modifier = Modifier.testTag(MeshTestTags.EXPORT_IMAGE),
             )
             Spacer(Modifier.width(4.dp))
             DropdownLink(
                 text = "@${exportScale}x",
+                modifier = Modifier.testTag(MeshTestTags.EXPORT_SCALE),
             ) {
                 repeat(3) {
                     selectableItem(
@@ -650,7 +676,8 @@ private fun CanvasSection(
             Spacer(Modifier.width(16.dp))
             Slider(
                 value = blurLevel,
-                onValueChange = onBlurLevelChange
+                onValueChange = onBlurLevelChange,
+                modifier = Modifier.testTag(MeshTestTags.BLUR_SLIDER),
             )
         }
     }

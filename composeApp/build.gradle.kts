@@ -215,6 +215,13 @@ tasks.withType<Test>().configureEach {
     useJUnitPlatform()
     systemProperty("java.awt.headless", "false")
     systemProperty("skiko.renderApi", "SOFTWARE_COMPAT")
+    systemProperty("mesh.screenshot.dir", layout.buildDirectory.dir("spectre-screenshots").get().asFile.absolutePath)
+    providers.systemProperty("mesh.screenshot.baseline").orNull?.let { baseline ->
+        systemProperty("mesh.screenshot.baseline", baseline)
+    }
+    providers.systemProperty("mesh.screenshot.name").orNull?.let { name ->
+        systemProperty("mesh.screenshot.name", name)
+    }
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     if (System.getProperty("os.name").lowercase().contains("mac")) {
         systemProperty("apple.awt.UIElement", "true")

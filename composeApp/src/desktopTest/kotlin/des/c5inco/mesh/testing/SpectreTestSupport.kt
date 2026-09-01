@@ -43,3 +43,11 @@ suspend fun ComposeAutomator.waitForText(
     eventually(description = "node with text '$text'", timeout = timeout) {
         findOneByText(text)
     }
+
+suspend fun ComposeAutomator.waitForContentDescription(
+    description: String,
+    timeout: Duration = 5.seconds,
+): AutomatorNode =
+    eventually(description = "node with contentDescription '$description'", timeout = timeout) {
+        findByContentDescription(description).firstOrNull()
+    }
