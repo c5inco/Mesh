@@ -26,4 +26,13 @@ object MeshTestTags {
     fun pointOffsetX(row: Int, col: Int): String = "mesh.point-offset-x-$row-$col"
 
     fun pointOffsetY(row: Int, col: Int): String = "mesh.point-offset-y-$row-$col"
+
+    fun controlHandle(side: String): String = "mesh.control-handle-$side"
+
+    fun handleOffsetX(side: String): String = "mesh.handle-offset-x-$side"
+
+    fun handleOffsetY(side: String): String = "mesh.handle-offset-y-$side"
+
+    const val RESET_HANDLES = "mesh.reset-handles"
+    const val SELECTED_HANDLES = "mesh.selected-handles"
 }

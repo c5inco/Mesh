@@ -44,6 +44,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import data.DimensionMode
+import des.c5inco.mesh.common.HandleSide
+import des.c5inco.mesh.common.MeshVertexHandles
+import des.c5inco.mesh.common.defaultOffset
+import des.c5inco.mesh.common.isAvailable
+import des.c5inco.mesh.common.isSpecified
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
 import des.c5inco.mesh.ui.components.ColorDropdown
@@ -95,6 +100,7 @@ fun SidePanel(
     totalRows: Int,
     totalCols: Int,
     meshPoints: List<List<Pair<Offset, Long>>> = emptyList(),
+    vertexHandles: Map<Pair<Int, Int>, MeshVertexHandles> = emptyMap(),
     showPoints: Boolean,
     constrainEdgePoints: Boolean,
     onCanvasWidthModeChange: () -> Unit = {},
@@ -105,6 +111,8 @@ fun SidePanel(
     onUpdateTotalRows: (Int) -> Unit = {},
     onUpdateTotalCols: (Int) -> Unit = {},
     onUpdateMeshPoint: (row: Int, col: Int, point: Pair<Offset, Long>) -> Unit,
+    onUpdateVertexHandle: (row: Int, col: Int, side: HandleSide, offset: Offset) -> Unit = { _, _, _, _ -> },
+    onResetVertexHandles: (row: Int, col: Int) -> Unit = { _, _ -> },
     onTogglePoints: () -> Unit = {},
     onToggleConstrainingEdgePoints: () -> Unit = {},
     onDistributeMeshPointsEvenly: () -> Unit = {},
@@ -304,6 +312,65 @@ fun SidePanel(
             val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
                 ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
             val selectedHighlightHeight = 24.dp
+
+            selectedColorPoint?.let { (row, col) ->
+                val handles = vertexHandles[row to col] ?: MeshVertexHandles()
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .testTag(MeshTestTags.SELECTED_HANDLES),
+                ) {
+                    Text(
+                        text = "Handles for $col,$row",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Drag the amber knobs on the canvas, or type offsets relative to the vertex.",
+                        fontSize = 12.sp,
+                        color = JewelTheme.globalColors.text.info,
+                    )
+                    HandleSide.entries
+                        .filter { it.isAvailable(row, col, meshPoints.size, meshPoints.firstOrNull()?.size ?: 0) }
+                        .forEach { side ->
+                            val current = handles.offset(side)
+                            val display = if (current.isSpecified) current else side.defaultOffset()
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(side.shortLabel, modifier = Modifier.width(16.dp))
+                                OffsetInputField(
+                                    value = display.x,
+                                    enabled = true,
+                                    paramName = "X",
+                                    onUpdate = { x ->
+                                        onUpdateVertexHandle(row, col, side, Offset(x, display.y))
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag(MeshTestTags.handleOffsetX(side.shortLabel.lowercase())),
+                                )
+                                OffsetInputField(
+                                    value = display.y,
+                                    enabled = true,
+                                    paramName = "Y",
+                                    onUpdate = { y ->
+                                        onUpdateVertexHandle(row, col, side, Offset(display.x, y))
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag(MeshTestTags.handleOffsetY(side.shortLabel.lowercase())),
+                                )
+                            }
+                        }
+                    Link(
+                        text = "Reset handles",
+                        onClick = { onResetVertexHandles(row, col) },
+                        modifier = Modifier.testTag(MeshTestTags.RESET_HANDLES),
+                    )
+                }
+            }
 
             Column(
                 verticalArrangement = Arrangement.spacedBy(16.dp),

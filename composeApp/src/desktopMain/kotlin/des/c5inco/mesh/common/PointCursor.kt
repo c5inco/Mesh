@@ -20,6 +20,7 @@ fun PointCursor(
     xIndex: Int,
     yIndex: Int,
     color: Color,
+    selected: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -36,9 +37,9 @@ fun PointCursor(
                     color = color
                 )
                 drawCircle(
-                    color = Color.White,
-                    style = Stroke(width = 4.dp.toPx())
-                ) // Fill is transparent by default
+                    color = if (selected) Color(0xFFFFC14D) else Color.White,
+                    style = Stroke(width = if (selected) 5.dp.toPx() else 4.dp.toPx()),
+                )
             }
     ) {
         Text("$xIndex,$yIndex", color = Color.White)

@@ -1,8 +1,11 @@
 package des.c5inco.mesh.data
 
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import des.c5inco.mesh.common.HandleSide
+import des.c5inco.mesh.common.MeshVertexHandles
 import com.squareup.kotlinpoet.CodeBlock
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.PropertySpec
@@ -102,6 +105,7 @@ class AppConfiguration(
     var meshState = MutableStateFlow(repository.loadMeshState())
 
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
+    val vertexHandles = mutableStateMapOf<Pair<Int, Int>, MeshVertexHandles>()
     private val meshPointsMutex = Mutex()
 
     private val loadMeshPoints = scope.async {
@@ -212,9 +216,20 @@ class AppConfiguration(
             meshPointsMutex.withLock {
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
+                vertexHandles.clear()
             }
         }
         previousJob?.cancel()
+    }
+
+    fun updateVertexHandle(row: Int, col: Int, side: HandleSide, offset: Offset) {
+        val key = row to col
+        val current = vertexHandles[key] ?: MeshVertexHandles()
+        vertexHandles[key] = current.with(side, offset)
+    }
+
+    fun resetVertexHandles(row: Int, col: Int) {
+        vertexHandles.remove(row to col)
     }
 
     fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) {
@@ -235,6 +250,7 @@ class AppConfiguration(
         )
         meshPoints.clear()
         meshPoints.addAll(newPoints)
+        vertexHandles.clear()
     }
 
     suspend fun saveMeshPoints() {

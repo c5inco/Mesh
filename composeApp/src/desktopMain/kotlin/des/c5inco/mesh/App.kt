@@ -55,15 +55,24 @@ fun App(
             availableColors = availableColors,
             canvasBackgroundColor = canvasBackgroundColor,
             meshPoints = configuration.meshPoints,
+            vertexHandles = configuration.vertexHandles,
+            selectedPoint = selectedColorPoint,
             showPoints = uiState.showPoints,
             onResize = { width, height ->
                 configuration.updateCanvasWidth(width)
                 configuration.updateCanvasHeight(height)
             },
             onTogglePoints = { configuration.toggleShowingPoints() },
-            onPointDragStartEnd = { selectedColorPoint = it },
+            onSelectPoint = { selectedColorPoint = it },
+            onPointDragStartEnd = { selected ->
+                if (selected != null) selectedColorPoint = selected
+            },
             onPointDrag = { row, col, point ->
                 configuration.updateMeshPoint(row, col, point)
+            },
+            onHandleDrag = { row, col, side, offset ->
+                selectedColorPoint = row to col
+                configuration.updateVertexHandle(row, col, side, offset)
             },
             modifier = Modifier
                 .weight(1f)
@@ -82,6 +91,7 @@ fun App(
             totalRows = meshState.rows,
             totalCols = meshState.cols,
             meshPoints = configuration.meshPoints,
+            vertexHandles = configuration.vertexHandles,
             showPoints = uiState.showPoints,
             constrainEdgePoints = uiState.constrainEdgePoints,
             onCanvasWidthModeChange = configuration::updateCanvasWidthMode,
@@ -93,6 +103,12 @@ fun App(
             onUpdateTotalCols = configuration::updateTotalCols,
             onUpdateMeshPoint = { row, col, point ->
                 configuration.updateMeshPoint(row, col, point)
+            },
+            onUpdateVertexHandle = { row, col, side, offset ->
+                configuration.updateVertexHandle(row, col, side, offset)
+            },
+            onResetVertexHandles = { row, col ->
+                configuration.resetVertexHandles(row, col)
             },
             onTogglePoints = { configuration.toggleShowingPoints() },
             onToggleConstrainingEdgePoints = { configuration.toggleConstrainingEdgePoints() },

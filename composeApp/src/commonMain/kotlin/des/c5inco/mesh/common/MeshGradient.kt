@@ -20,19 +20,24 @@ import androidx.compose.ui.platform.LocalDensity
  * [points] is a vertex grid. A grid of R×C vertices becomes a painter with
  * `rows = R - 1` and `columns = C - 1` patches.
  *
- * Vertex positions and colors are read from [points] during draw, so updates
- * (drags, palette changes) are reflected without reallocating the painter
- * unless the grid dimensions change.
+ * Optional [handles] supply Bezier control-point offsets per vertex. Missing
+ * entries leave those tangents unspecified so Compose infers them.
+ *
+ * Vertex positions, colors, and handles are read during draw, so updates
+ * (drags, palette changes, handle edits) are reflected without reallocating
+ * the painter unless the grid dimensions change.
  */
 @Composable
 fun Modifier.meshGradient(
     points: List<List<Pair<Offset, Color>>>,
     blurLevel: Int = 0,
     hasBicubicColor: Boolean = true,
+    handles: Map<Pair<Int, Int>, MeshVertexHandles> = emptyMap(),
 ): Modifier {
     val patchRows = (points.size - 1).coerceAtLeast(1)
     val patchColumns = ((points.firstOrNull()?.size ?: 1) - 1).coerceAtLeast(1)
     val pointsState = rememberUpdatedState(points)
+    val handlesState = rememberUpdatedState(handles)
 
     val painter = remember(patchRows, patchColumns, hasBicubicColor) {
         MeshGradientPainter(
@@ -41,15 +46,21 @@ fun Modifier.meshGradient(
             hasBicubicColor = hasBicubicColor,
         ) {
             val currentPoints = pointsState.value
+            val currentHandles = handlesState.value
             for (row in currentPoints.indices) {
                 val columns = currentPoints[row]
                 for (column in columns.indices) {
                     val (position, color) = columns[column]
+                    val vertexHandles = currentHandles[row to column]
                     setVertex(
                         row = row,
                         column = column,
                         position = position,
                         color = color,
+                        leftControlPoint = vertexHandles?.left ?: Offset.Unspecified,
+                        topControlPoint = vertexHandles?.top ?: Offset.Unspecified,
+                        rightControlPoint = vertexHandles?.right ?: Offset.Unspecified,
+                        bottomControlPoint = vertexHandles?.bottom ?: Offset.Unspecified,
                     )
                 }
             }
