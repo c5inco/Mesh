@@ -113,7 +113,7 @@ compose.desktop {
         javaHome = desktopJavaHome.get()
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Exe, TargetFormat.Deb)
 
             packageVersion = version.toString()
             packageName = baseName
@@ -135,6 +135,12 @@ compose.desktop {
                         identity.set(it)
                     }
                 }
+            }
+            linux {
+                iconFile = rootProject.file("artwork/icon.png")
+            }
+            windows {
+                iconFile = rootProject.file("artwork/icon.ico")
             }
         }
     }
