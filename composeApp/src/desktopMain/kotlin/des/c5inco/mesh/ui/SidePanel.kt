@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.sp
 import data.DimensionMode
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
+import des.c5inco.mesh.data.Notifications
+import des.c5inco.mesh.mcp.McpServerState
 import des.c5inco.mesh.ui.components.ColorDropdown
 import des.c5inco.mesh.ui.components.ColorSwatch
 import des.c5inco.mesh.ui.components.DimensionInputField
@@ -79,6 +81,8 @@ import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.ui.theme.colorPalette
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -115,6 +119,9 @@ fun SidePanel(
     onAddColor: (Color) -> Unit = { _ -> },
     onRemoveColor: (SavedColor) -> Unit = { _ -> },
     selectedColorPoint: Pair<Int, Int>? = null,
+    mcpServerState: McpServerState? = null,
+    onMcpServerEnabledChange: (Boolean) -> Unit = {},
+    onMcpServerPortChange: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -216,6 +223,20 @@ fun SidePanel(
                 onCanvasHeightChange = onCanvasHeightChange,
                 onBlurLevelChange = { onBlurLevelChange(it) }
             )
+
+            if (mcpServerState != null) {
+                Divider(
+                    orientation = Orientation.Horizontal,
+                    thickness = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                McpServerSection(
+                    state = mcpServerState,
+                    onEnabledChange = onMcpServerEnabledChange,
+                    onPortChange = onMcpServerPortChange,
+                )
+            }
 
             Divider(
                 orientation = Orientation.Horizontal,
@@ -349,6 +370,60 @@ fun SidePanel(
             }
         }
     }
+}
+
+@Composable
+private fun McpServerSection(
+    state: McpServerState,
+    onEnabledChange: (Boolean) -> Unit,
+    onPortChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.padding(16.dp)) {
+        SectionHeader(title = "MCP server")
+        Spacer(Modifier.height(12.dp))
+        CheckboxRow(
+            text = "Let agents edit this mesh",
+            checked = state.enabled,
+            onCheckedChange = onEnabledChange,
+            modifier = Modifier.testTag(MeshTestTags.MCP_SERVER_ENABLED),
+        )
+        Spacer(Modifier.height(8.dp))
+        DimensionInputField(
+            value = state.port,
+            min = 1024,
+            max = 65535,
+            enabled = true,
+            paramName = "Port",
+            onUpdate = onPortChange,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        when (val status = state.status) {
+            McpServerState.Status.Off -> StatusText("Off")
+            McpServerState.Status.Starting -> StatusText("Starting…")
+            is McpServerState.Status.Failed -> StatusText(status.message, color = JewelTheme.globalColors.text.error)
+            is McpServerState.Status.Running -> Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusText(status.url, modifier = Modifier.weight(1f))
+                Link(
+                    text = "Copy",
+                    onClick = {
+                        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(status.url), null)
+                        Notifications.send("📋 MCP server URL copied to the clipboard!")
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusText(
+    text: String,
+    color: Color = JewelTheme.globalColors.text.info,
+    modifier: Modifier = Modifier,
+) {
+    Text(text, fontSize = 12.sp, color = color, modifier = modifier.testTag(MeshTestTags.MCP_SERVER_STATUS))
 }
 
 @Composable

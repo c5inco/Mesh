@@ -25,7 +25,7 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 
 ## Agent access (MCP)
 
-While Mesh is open, it serves an [MCP](https://modelcontextprotocol.io) server over Streamable HTTP at `http://127.0.0.1:7777/mcp`, so an agent can edit the gradient you are looking at. It listens only on localhost and rejects requests from other origins.
+Mesh can serve an [MCP](https://modelcontextprotocol.io) server over Streamable HTTP so an agent can edit the gradient you are looking at. It is off by default: turn on **Let agents edit this mesh** in the side panel's MCP server section, where you can also change the port (default `7777`) and copy the URL. The setting is remembered across launches. The server listens only on localhost and rejects requests from other origins.
 
 | Tool | What it does |
 | --- | --- |

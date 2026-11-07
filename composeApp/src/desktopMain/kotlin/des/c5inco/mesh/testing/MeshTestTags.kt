@@ -9,6 +9,8 @@ object MeshTestTags {
     const val EXPORT_CODE = "mesh.export-code"
     const val ADD_CUSTOM_COLOR = "mesh.add-custom-color"
     const val CUSTOM_COLOR_INPUT = "mesh.custom-color-input"
+    const val MCP_SERVER_ENABLED = "mesh.mcp-server-enabled"
+    const val MCP_SERVER_STATUS = "mesh.mcp-server-status"
 
     fun pointColor(row: Int, col: Int): String = "mesh.point-color-$row-$col"
 }
