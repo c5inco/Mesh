@@ -10,6 +10,8 @@ import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import org.jetbrains.compose.desktop.application.tasks.AbstractNotarizationTask
 import groovy.json.JsonSlurper
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Properties
 import kotlin.io.path.listDirectoryEntries
 
@@ -207,14 +209,41 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
             }
         }
 
-        // Never delete recursively here: a stale mount contains the DMG's Applications -> /Applications symlink.
-        fun unmount() {
-            if (mountPoint.exists()) run("hdiutil", "detach", mountPoint.absolutePath, check = false)
+        // Detaches every mount of this DMG (such as one left by the manual commands in docs/RELEASING.md)
+        // and anything mounted at the task's mount point, then removes the empty mount point.
+        // Never delete recursively here: a mount contains the DMG's Applications -> /Applications symlink.
+        fun detachMounts() {
+            val plist = ByteArrayOutputStream()
+            execOperations.exec {
+                commandLine("hdiutil", "info", "-plist")
+                standardOutput = plist
+            }
+            val json = ByteArrayOutputStream()
+            execOperations.exec {
+                commandLine("plutil", "-convert", "json", "-o", "-", "-")
+                standardInput = plist.toByteArray().inputStream()
+                standardOutput = json
+            }
+            val images = (JsonSlurper().parseText(json.toString()) as Map<*, *>)["images"] as? List<*>
+            images.orEmpty().filterIsInstance<Map<*, *>>().forEach { image ->
+                val entities = (image["system-entities"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
+                val mountPoints = entities.mapNotNull { (it["mount-point"] as? String)?.let { path -> File(path).canonicalFile } }
+                val isThisDmg = (image["image-path"] as? String)?.let { File(it).canonicalFile } == dmg.canonicalFile
+                val device = entities.firstNotNullOfOrNull { it["dev-entry"] as? String }
+                if ((isThisDmg || mountPoint.canonicalFile in mountPoints) && device != null) {
+                    val (exitCode) = run("hdiutil", "detach", device, check = false)
+                    if (exitCode != 0) {
+                        throw GradleException("Could not eject $device (mounted at ${mountPoints.joinToString()}). Eject it and rerun $name.")
+                    }
+                }
+            }
             if (mountPoint.exists() && !mountPoint.delete()) {
-                throw GradleException("$mountPoint is still mounted or not empty. Eject it and rerun $name.")
+                throw GradleException("$mountPoint is not empty. Remove it and rerun $name.")
             }
         }
 
+        // Before signing, so a stale mount cannot make codesign or the later attach fail.
+        detachMounts()
         try {
             // Sign the DMG itself so the stapled DMG can be assessed by Gatekeeper without a network lookup.
             run("codesign", "--force", "--timestamp", "--sign", identity, dmg.absolutePath)
@@ -247,27 +276,38 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
                 "spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg.absolutePath,
             )
 
-            unmount()
-            // The DMG has a license agreement, so hdiutil cancels the attach unless it is accepted on stdin.
-            execOperations.exec {
-                commandLine("hdiutil", "attach", dmg.absolutePath, "-readonly", "-nobrowse", "-mountpoint", mountPoint.absolutePath)
-                standardInput = "Y\n".byteInputStream()
-                standardOutput = ByteArrayOutputStream()
-            }
             try {
+                // The DMG has a license agreement, so hdiutil cancels the attach unless it is accepted on stdin.
+                execOperations.exec {
+                    commandLine("hdiutil", "attach", dmg.absolutePath, "-readonly", "-nobrowse", "-mountpoint", mountPoint.absolutePath)
+                    standardInput = "Y\n".byteInputStream()
+                    standardOutput = ByteArrayOutputStream()
+                }
                 val app = mountPoint.resolve("$baseName.app").absolutePath
                 run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
                 requireNotarizedDeveloperId("spctl", "--assess", "--type", "execute", "--verbose=4", app)
-            } finally {
-                unmount()
+            } catch (failure: Throwable) {
+                // Also covers a failed attach that still left a mount; keep the verification error as the cause.
+                runCatching { detachMounts() }.exceptionOrNull()?.let(failure::addSuppressed)
+                throw failure
             }
         } catch (failure: Throwable) {
-            // Keep a stapled but unverified DMG out of the release path.
+            // Keep a stapled but unverified DMG out of the release path, and fail loudly if that is impossible.
             val unverified = dmg.resolveSibling("${dmg.name}.unverified")
-            unverified.delete()
-            if (dmg.renameTo(unverified)) logger.error("Moved ${dmg.name} to ${unverified.name}; do not distribute it.")
+            try {
+                Files.move(dmg.toPath(), unverified.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } catch (moveFailure: Exception) {
+                failure.addSuppressed(moveFailure)
+                throw GradleException(
+                    "$dmg failed notarization or verification and could not be moved off the release path. " +
+                        "Delete it and do not distribute it.",
+                    failure,
+                )
+            }
+            logger.error("Moved ${dmg.name} to ${unverified.name}; do not distribute it.")
             throw failure
         }
+        detachMounts()
         logger.lifecycle("Notarized, stapled, and verified ${dmg.absolutePath}")
     }
 }

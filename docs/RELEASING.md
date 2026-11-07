@@ -197,9 +197,12 @@ If notarization returns `Invalid`, the task prints Apple's log with the
 rejected files. Fix the signing problem and rerun `notarizeDmg`; do not
 distribute the DMG.
 
-If `hdiutil attach` reports `Resource busy`, or the task reports that its
-`dmg-mount` directory is still mounted, eject any mounted copy of the DMG and
-rerun the task.
+`notarizeDmg` ejects any mounted copy of the DMG before it signs. If it reports
+that it could not eject a mount, close whatever is using that volume, eject it,
+and rerun the task.
+
+If the task reports that the DMG could not be moved off the release path,
+delete `Mesh-<version>.dmg` by hand; it failed notarization or verification.
 
 If `codesign` cannot find the identity, confirm the Developer ID certificate and
 private key are installed on the release machine:
