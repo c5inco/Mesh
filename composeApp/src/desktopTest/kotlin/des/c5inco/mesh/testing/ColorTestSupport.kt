@@ -2,13 +2,31 @@ package des.c5inco.mesh.testing
 
 import dev.sebastiano.spectre.core.AutomatorNode
 import dev.sebastiano.spectre.core.ComposeAutomator
+import kotlin.time.Duration.Companion.seconds
 
 suspend fun ComposeAutomator.addCustomColor(hex: String) {
     performSemanticsClick(waitForTestTag(MeshTestTags.ADD_CUSTOM_COLOR))
     waitForVisualIdle()
 
-    val colorInput = waitForTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)
-    clearAndTypeText(colorInput, hex)
+    // The input refills its last valid color whenever its focus changes. In GUI runs focus sometimes
+    // moves while the robot is typing, after a popup from the previous step closes, so retype until
+    // the input holds the hex.
+    var typed = false
+    for (attempt in 1..3) {
+        val colorInput = eventually(description = "focused custom color input") {
+            refreshWindows()
+            findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.isFocused }
+        }
+        clearAndTypeText(colorInput, hex)
+        typed = runCatching {
+            eventually(description = "custom color input to read $hex", timeout = 2.seconds) {
+                refreshWindows()
+                findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.editableText == hex }
+            }
+        }.isSuccess
+        if (typed) break
+    }
+    check(typed) { "Could not type $hex into the custom color input" }
     pressEnter()
     waitForVisualIdle()
 }

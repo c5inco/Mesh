@@ -4,6 +4,7 @@ import des.c5inco.mesh.testing.MeshAppFixture
 import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.testing.addCustomColor
 import des.c5inco.mesh.testing.assertColorSelectedInOpenDropdown
+import des.c5inco.mesh.testing.eventually
 import des.c5inco.mesh.testing.openPointColorDropdown
 import des.c5inco.mesh.testing.selectColorInOpenDropdown
 import des.c5inco.mesh.testing.waitForClipboardText
@@ -14,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeAll
@@ -155,6 +157,32 @@ class MeshGuiTest {
 
             openPointColorDropdown(row = 0, col = 0)
             assertColorSelectedInOpenDropdown("00FF00")
+        }
+    }
+
+    @Test
+    @Order(8)
+    fun `deleting a custom color asks for confirmation first`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            waitForVisualIdle()
+
+            addCustomColor("0000FF")
+            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            waitForVisualIdle()
+            waitForText("Delete #0000FF?")
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CANCEL))
+            waitForVisualIdle()
+            assertNull(findOneByText("Delete #0000FF?"), "Cancel should close the confirmation")
+            assertNotNull(findOneByTestTag(MeshTestTags.customColor("0000FF")), "Cancel should keep the color")
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            waitForVisualIdle()
+            performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CONFIRM))
+            eventually(description = "custom color 0000FF to be deleted") {
+                if (findOneByTestTag(MeshTestTags.customColor("0000FF")) == null) Unit else null
+            }
         }
     }
 }

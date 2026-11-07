@@ -41,6 +41,12 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import data.DimensionMode
@@ -68,11 +74,14 @@ import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.Orientation
 import org.jetbrains.jewel.ui.Outline
 import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Divider
 import org.jetbrains.jewel.ui.component.DropdownLink
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconButton
 import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.PopupContainer
 import org.jetbrains.jewel.ui.component.Slider
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
@@ -136,6 +145,7 @@ fun SidePanel(
                 modifier = Modifier.padding(16.dp),
             ) {
                 var showColorInput by remember { mutableStateOf(false) }
+                var colorPendingDeletion by remember { mutableStateOf<SavedColor?>(null) }
 
                 SectionHeader(title = "Colors")
 
@@ -189,12 +199,31 @@ fun SidePanel(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     customColors.forEach { savedColor ->
-                        ColorSwatch(
-                            color = savedColor.toColor(),
-                            modifier = Modifier.clickable {
-                                onRemoveColor(savedColor)
+                        // The confirmation popup anchors to the swatch that opened it.
+                        Box {
+                            ColorSwatch(
+                                color = savedColor.toColor(),
+                                modifier = Modifier
+                                    .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
+                                    // Until the mesh loads, its points can't be checked or cleared.
+                                    .clickable(enabled = meshPoints.isNotEmpty()) {
+                                        showColorInput = false
+                                        colorPendingDeletion = savedColor
+                                    }
+                            )
+                            if (colorPendingDeletion == savedColor) {
+                                DeleteColorConfirmation(
+                                    color = savedColor,
+                                    pointsUsingColor = meshPoints.sumOf { row -> row.count { it.second == savedColor.uid } },
+                                    backgroundUsesColor = canvasBackgroundColor == savedColor.uid,
+                                    onCancel = { colorPendingDeletion = null },
+                                    onConfirm = {
+                                        colorPendingDeletion = null
+                                        onRemoveColor(savedColor)
+                                    },
+                                )
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -424,6 +453,77 @@ private fun StatusText(
     modifier: Modifier = Modifier,
 ) {
     Text(text, fontSize = 12.sp, color = color, modifier = modifier.testTag(MeshTestTags.MCP_SERVER_STATUS))
+}
+
+@Composable
+private fun DeleteColorConfirmation(
+    color: SavedColor,
+    pointsUsingColor: Int,
+    backgroundUsesColor: Boolean,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val gapPx = with(LocalDensity.current) { 4.dp.roundToPx() }
+    PopupContainer(
+        onDismissRequest = onCancel,
+        horizontalAlignment = Alignment.End,
+        popupPositionProvider = remember(gapPx) { SwatchPopupPositionProvider(gapPx) },
+    ) {
+        Column(Modifier.width(260.dp).padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ColorSwatch(color = color.toColor())
+                Spacer(Modifier.width(8.dp))
+                Text("Delete #${color.toColor().toHexStringNoHash()}?")
+            }
+            Spacer(Modifier.height(4.dp))
+            val consequences = buildList {
+                when (pointsUsingColor) {
+                    0 -> {}
+                    1 -> add("1 point uses it and will turn transparent.")
+                    else -> add("$pointsUsingColor points use it and will turn transparent.")
+                }
+                if (backgroundUsesColor) add("The canvas background uses it and will reset to the default.")
+            }.ifEmpty { listOf("Nothing in the mesh uses this color.") }
+            consequences.forEach {
+                Text(it, fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(onClick = onCancel, modifier = Modifier.testTag(MeshTestTags.DELETE_COLOR_CANCEL)) {
+                    Text("Cancel")
+                }
+                DefaultButton(onClick = onConfirm, modifier = Modifier.testTag(MeshTestTags.DELETE_COLOR_CONFIRM)) {
+                    Text("Delete")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Places a popup below its swatch, right-aligned so it opens toward the canvas, and keeps it inside
+ * the window: Jewel's menu positioning doesn't move popups back inside the window horizontally.
+ */
+private class SwatchPopupPositionProvider(private val gapPx: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val x = (anchorBounds.right - popupContentSize.width)
+            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+        val below = anchorBounds.bottom + gapPx
+        val y = if (below + popupContentSize.height <= windowSize.height) {
+            below
+        } else {
+            (anchorBounds.top - gapPx - popupContentSize.height).coerceAtLeast(0)
+        }
+        return IntOffset(x, y)
+    }
 }
 
 @Composable
