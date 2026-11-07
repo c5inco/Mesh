@@ -72,9 +72,9 @@ fun main() {
 private fun shutdown(
     configuration: AppConfiguration
 ) {
-    configuration.saveMeshState()
-    runBlocking {
-        configuration.saveMeshPoints()
+    // Writes the state captured at the last edit; waiting on the UI thread here could hang the exit.
+    runBlocking<Unit> {
+        configuration.flushPendingSave()
     }
 }
 

@@ -87,6 +87,9 @@ class McpServerController(
         }
         scope.launch {
             serverMutex.withLock {
+                // An uncontended lock doesn't check cancellation, so a restart that takes the lock
+                // right after close() released it must stop here instead of starting a server.
+                ensureActive()
                 server?.stop(gracePeriodMillis = 0, timeoutMillis = 500)
                 server = null
 
