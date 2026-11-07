@@ -83,7 +83,7 @@ class MeshGuiTest {
 
     @Test
     @Order(4)
-    fun `export code copies mesh points to the clipboard`(): Unit = runBlocking {
+    fun `export code copies an official mesh gradient painter to the clipboard`(): Unit = runBlocking {
         with(fixture.automator) {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
@@ -94,17 +94,28 @@ class MeshGuiTest {
             waitForText("📋 Points copied to the clipboard!")
 
             val clipboardText = waitForClipboardText("exported mesh code") { text ->
-                text.contains("val colorPoints") && text.contains("Offset(")
+                text.contains("val meshGradient") && text.contains("setVertex(")
             }
 
             assertTrue(
-                clipboardText.contains("Offset(0.0f, 0.0f) to Color(0xFF7766EE)"),
+                clipboardText.contains("MeshGradientPainter(rows = 2, columns = 3, hasBicubicColor = true)"),
+                "Painter dimensions count patches, not vertices",
+            )
+            assertTrue(
+                clipboardText.contains(
+                    "setVertex(0, 0, Offset(0.0f, 0.0f), Color(0xFF7766EE))",
+                ),
                 "Clipboard should contain the first mesh point",
             )
             assertTrue(
-                clipboardText.contains("Offset(0.0f, 1.0f) to Color(0xFF429BED)"),
+                clipboardText.contains(
+                    "setVertex(2, 0, Offset(0.0f, 1.0f), Color(0xFF429BED))",
+                ),
                 "Clipboard should contain the last row mesh point",
             )
+            assertTrue(clipboardText.contains("val meshGradientModifier"))
+            assertTrue(clipboardText.contains(".paint(meshGradient, sizeToIntrinsics = false)"))
+            assertFalse(clipboardText.contains("BlurEffect"), "The default mesh has no blur")
         }
     }
 

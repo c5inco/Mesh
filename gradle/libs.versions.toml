@@ -1,7 +1,7 @@
 [versions]
 androidx-lifecycle = "2.10.0"
-compose-multiplatform = "1.11.0" # Must stay on Jewel's supported Compose 1.11 line
-jewel = "0.39.1-262.9437.29"
+compose-multiplatform = "1.12.2" # Keep aligned with Jewel's supported Compose 1.12 line
+jewel = "0.42.0-263.7307.200"
 junit = "4.13.2"
 junit-jupiter = "5.11.4"
 junit-platform = "1.11.4"

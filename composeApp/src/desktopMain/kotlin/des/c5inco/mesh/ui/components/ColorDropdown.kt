@@ -194,7 +194,7 @@ private fun DropdownButton(
                 menuModifier
                     .focusProperties { canFocus = true }
                     .defaultMinSize(minWidth = with(density) { componentWidth.toDp() }),
-                style = style.menuStyle,
+                menuStyle = style.menuStyle,
                 horizontalAlignment = Alignment.Start,
                 content = menuContent,
             )
