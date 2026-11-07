@@ -124,28 +124,14 @@ class AppConfiguration(
 
     var canvasBackgroundColor = MutableStateFlow(-1L)
 
-    var meshState = MutableStateFlow(repository.loadMeshState())
+    private val savedMeshState = repository.loadMeshState()
+    var meshState = MutableStateFlow(savedMeshState)
 
     /**
      * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
      * background work such as loading and grid regeneration hands its result to the UI thread.
      */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
-
-    private val loadMeshPoints = scope.async {
-        val initialMeshPoints = repository.getMeshPoints().first()
-        println("Loaded points: $initialMeshPoints")
-        val loadedPoints = if (initialMeshPoints.isEmpty()) {
-            defaultColorPoints
-        } else {
-            initialMeshPoints.toOffsetGrid()
-        }
-
-        withContext(Dispatchers.Main) {
-            meshPoints.clear()
-            meshPoints.addAll(loadedPoints)
-        }
-    }
 
     /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
     suspend fun awaitMeshLoaded() = loadMeshPoints.await()
@@ -161,6 +147,7 @@ class AppConfiguration(
 
     @Volatile
     private var latestSave: PendingSave? = null
+    private var lastWrittenSave: PendingSave? = null // Guarded by saveMutex.
     private val saveMutex = Mutex()
     /** Buffered so no request is lost before collection starts. */
     private val saveRequests = Channel<Unit>(Channel.CONFLATED)
@@ -197,14 +184,43 @@ class AppConfiguration(
      * it never waits on the UI thread, and writes never interleave.
      */
     suspend fun flushPendingSave() = saveMutex.withLock {
-        val save = latestSave ?: return@withLock
-        repository.saveMeshState(save.meshState)
-        repository.saveMeshPoints(save.points)
+        // Keep going until nothing newer was captured during a write, such as a regeneration landing.
+        while (true) {
+            val save = latestSave
+            if (save == null || save === lastWrittenSave) return@withLock
+            repository.saveMeshState(save.meshState)
+            repository.saveMeshPoints(save.points)
+            lastWrittenSave = save
+        }
     }
 
     private val history = EditHistory<EditSnapshot>()
     val canUndo = history.canUndo
     val canRedo = history.canRedo
+
+    // Declared after the fields it touches, which it may reach before the constructor finishes.
+    private val loadMeshPoints = scope.async {
+        val initialMeshPoints = repository.getMeshPoints().first()
+        println("Loaded points: $initialMeshPoints")
+        val loadedPoints = if (initialMeshPoints.isEmpty()) {
+            defaultColorPoints
+        } else {
+            initialMeshPoints.toOffsetGrid()
+        }
+
+        withContext(Dispatchers.Main) {
+            meshPoints.clear()
+            meshPoints.addAll(loadedPoints)
+            // The state file and the points table are written separately, so a crash between the two
+            // can leave a grid size that doesn't match the points; the points win.
+            if (generateMeshPointsJob == null) {
+                meshState.update { it.copy(rows = loadedPoints.size, cols = loadedPoints[0].size) }
+            }
+            // Save edits made while loading, and any size repaired above.
+            if (meshState.value != savedMeshState) requestSave()
+        }
+    }
+
 
     val uiState = MutableStateFlow(
         AppUiState(
@@ -300,6 +316,7 @@ class AppConfiguration(
                 val before = snapshot()
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
+                meshState.update { it.copy(rows = generatedPoints.size, cols = generatedPoints[0].size) }
                 if (snapshot() != before) history.record(before, group = null)
                 requestSave()
             }
@@ -451,7 +468,22 @@ class AppConfiguration(
     }
 
     fun undo() {
+        if (cancelPendingResize()) return
         history.undo(snapshot())?.let(::restore)
+    }
+
+    /**
+     * A resize becomes an undo step only when its grid arrives. Before that it is still the most
+     * recent edit, so undo cancels it instead of undoing the edit before it. It can't be redone.
+     */
+    private fun cancelPendingResize(): Boolean {
+        val pending = generateMeshPointsJob ?: return false
+        if (pending.isCompleted || meshPoints.isEmpty()) return false
+        gridGeneration.incrementAndGet()
+        generateMeshPointsJob = null
+        pending.cancel()
+        meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
+        return true
     }
 
     fun redo() {
