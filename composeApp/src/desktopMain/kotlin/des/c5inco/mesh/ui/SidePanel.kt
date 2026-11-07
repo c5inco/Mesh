@@ -199,7 +199,8 @@ fun SidePanel(
                                 color = savedColor.toColor(),
                                 modifier = Modifier
                                     .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
-                                    .clickable {
+                                    // Until the mesh loads, its points can't be checked or cleared.
+                                    .clickable(enabled = meshPoints.isNotEmpty()) {
                                         showColorInput = false
                                         colorPendingDeletion = savedColor
                                     }
@@ -208,6 +209,7 @@ fun SidePanel(
                                 DeleteColorConfirmation(
                                     color = savedColor,
                                     pointsUsingColor = meshPoints.sumOf { row -> row.count { it.second == savedColor.uid } },
+                                    backgroundUsesColor = canvasBackgroundColor == savedColor.uid,
                                     onCancel = { colorPendingDeletion = null },
                                     onConfirm = {
                                         colorPendingDeletion = null
@@ -451,12 +453,15 @@ private fun StatusText(
 private fun DeleteColorConfirmation(
     color: SavedColor,
     pointsUsingColor: Int,
+    backgroundUsesColor: Boolean,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
     PopupContainer(
         onDismissRequest = onCancel,
-        horizontalAlignment = Alignment.Start,
+        // Open toward the canvas: the side panel sits against the window's right edge, and Jewel
+        // doesn't move popups back inside the window horizontally.
+        horizontalAlignment = Alignment.End,
     ) {
         Column(Modifier.width(260.dp).padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -465,15 +470,17 @@ private fun DeleteColorConfirmation(
                 Text("Delete #${color.toColor().toHexStringNoHash()}?")
             }
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = when (pointsUsingColor) {
-                    0 -> "No points use this color."
-                    1 -> "1 point uses it and will turn transparent."
-                    else -> "$pointsUsingColor points use it and will turn transparent."
-                },
-                fontSize = 12.sp,
-                color = JewelTheme.globalColors.text.info,
-            )
+            val consequences = buildList {
+                when (pointsUsingColor) {
+                    0 -> {}
+                    1 -> add("1 point uses it and will turn transparent.")
+                    else -> add("$pointsUsingColor points use it and will turn transparent.")
+                }
+                if (backgroundUsesColor) add("The canvas background uses it and will reset to the default.")
+            }.ifEmpty { listOf("Nothing in the mesh uses this color.") }
+            consequences.forEach {
+                Text(it, fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+            }
             Spacer(Modifier.height(8.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
