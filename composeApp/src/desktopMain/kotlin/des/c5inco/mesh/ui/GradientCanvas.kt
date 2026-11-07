@@ -207,16 +207,19 @@ fun GradientCanvas(
                         // Draw the visible graphics layer on the canvas
                         drawLayer(graphicsLayer)
                     }
-                    .meshGradient(
-                        points = meshPoints.map { row ->
-                            row.map {
-                                it.first to availableColors.findColor(it.second)
-                            }
-                        },
-                        blurLevel = (blurLevel * MAX_BLUR_LEVEL).roundToInt(),
-                        resolutionX = resolution,
-                        resolutionY = resolution,
-                        showPoints = showPoints
+                    .then(
+                        // The first frame can come before the saved mesh loads, and an empty grid can't be drawn.
+                        if (meshPoints.isEmpty()) Modifier else Modifier.meshGradient(
+                            points = meshPoints.map { row ->
+                                row.map {
+                                    it.first to availableColors.findColor(it.second)
+                                }
+                            },
+                            blurLevel = (blurLevel * MAX_BLUR_LEVEL).roundToInt(),
+                            resolutionX = resolution,
+                            resolutionY = resolution,
+                            showPoints = showPoints
+                        )
                     )
             ) {
                 Spacer(Modifier.fillMaxSize())
