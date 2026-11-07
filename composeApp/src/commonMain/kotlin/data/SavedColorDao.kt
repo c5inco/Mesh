@@ -21,6 +21,9 @@ interface SavedColorDao {
     @Insert
     suspend fun insertAll(vararg colors: SavedColor)
 
+    @Insert
+    suspend fun insert(color: SavedColor): Long
+
     @Delete
     suspend fun delete(color: SavedColor)
 }

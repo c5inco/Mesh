@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.BindException
@@ -71,7 +72,13 @@ class McpServerController(
     /** Stops the server for good, such as when the app exits. */
     fun close() {
         scope.cancel()
-        server?.stop(gracePeriodMillis = 0, timeoutMillis = 500)
+        // A start already under way finishes before the lock is free, so its server gets stopped too.
+        runBlocking {
+            serverMutex.withLock {
+                server?.stop(gracePeriodMillis = 0, timeoutMillis = 500)
+                server = null
+            }
+        }
     }
 
     private fun restart() {

@@ -187,6 +187,36 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `undo keeps the grid size and points consistent while a regeneration is pending`() = runBlocking {
+        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
+        val configuration = AppConfiguration(repository)
+        configuration.saveMeshPoints() // Waits for the initial grid to load.
+
+        // With no colors yet, regeneration waits, so the column change sees the old 3×4 points.
+        configuration.updateTotalRows(5)
+        configuration.updateTotalCols(6)
+        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
+        configuration.saveMeshPoints()
+
+        configuration.undo()
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(List(3) { 4 }, configuration.meshPoints.map { it.size })
+    }
+
+    @Test
+    fun `undo does not bring back a deleted palette color`() = runBlocking {
+        val configuration = loadedConfiguration()
+        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 2L)
+
+        configuration.removeColorFromMeshPoints(2L)
+        configuration.undo()
+
+        assertEquals(Offset(0.33f, 0.8f) to -1L, configuration.meshPoints[1][1])
+        assertTrue(configuration.meshPoints.flatten().none { it.second == 2L })
+        assertFalse(configuration.canUndo.value)
+    }
+
+    @Test
     fun `a new edit after undo clears redo`() = runBlocking {
         val configuration = loadedConfiguration()
         configuration.updateCanvasBackgroundColor(2L)
@@ -203,13 +233,8 @@ class AppConfigurationTest {
     @Test
     fun `edits are saved without waiting for the app to quit`() = runBlocking {
         val saves = Channel<List<MeshPoint>>(Channel.UNLIMITED)
-        val configuration = AppConfiguration(
-            FakeDataRepository(
-                meshPoints = flowOf(emptyList()),
-                initialColors = listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)),
-                onSaveMeshPoints = { saves.trySend(it) },
-            )
-        )
+        val configuration = loadedConfiguration(onSaveMeshPoints = { saves.trySend(it) })
+        saves.receive() // The save that waited for loading.
 
         configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
         configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
@@ -220,10 +245,11 @@ class AppConfigurationTest {
         assertTrue(saves.isEmpty, "Rapid edits should save once")
     }
 
-    private suspend fun loadedConfiguration() = AppConfiguration(
+    private suspend fun loadedConfiguration(onSaveMeshPoints: (List<MeshPoint>) -> Unit = {}) = AppConfiguration(
         FakeDataRepository(
             meshPoints = flowOf(emptyList()),
             initialColors = listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)),
+            onSaveMeshPoints = onSaveMeshPoints,
         )
     ).also { it.saveMeshPoints() } // Waits for the initial grid to load.
 }

@@ -45,6 +45,12 @@ class EditHistory<T>(
     /** Returns the state to restore, or null when there is nothing to redo. */
     fun redo(current: T): T? = move(from = redoStack, to = undoStack, current)
 
+    /** Rewrites every recorded state, such as when an edit outside history invalidates them. */
+    fun replaceAll(transform: (T) -> T) {
+        undoStack.replaceAll(transform)
+        redoStack.replaceAll(transform)
+    }
+
     private fun move(from: ArrayDeque<T>, to: ArrayDeque<T>, current: T): T? {
         val target = from.removeLastOrNull() ?: return null
         to.addLast(current)
