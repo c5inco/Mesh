@@ -62,6 +62,8 @@ kotlin {
             }
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.kotlinpoet)
+            implementation(libs.mcp.kotlin.sdk.server)
+            implementation(libs.ktor.server.cio)
         }
         desktopTest.dependencies {
             implementation(libs.spectre.core)
@@ -69,6 +71,8 @@ kotlin {
             implementation(libs.junit.jupiter)
             runtimeOnly(libs.junit.platform.launcher)
             implementation(libs.kotlinx.coroutines.swing)
+            implementation(libs.mcp.kotlin.sdk.client)
+            implementation(libs.ktor.client.cio)
         }
     }
 }
@@ -239,6 +243,8 @@ val desktopUnitTest by tasks.registering(Test::class) {
     useJUnitPlatform {
         excludeTags("spectre")
     }
+    // Unit tests need the Swing event thread (Dispatchers.Main) but no display.
+    systemProperty("java.awt.headless", "true")
 }
 
 tasks.named("check") {

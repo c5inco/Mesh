@@ -12,6 +12,7 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 - **Canvas:** Configure canvas dimensions (fixed size or fill) and background color.
 - **Export:** Copy Kotlin code (`Pair<Offset, Color>` point lists via KotlinPoet) for `@sinasamaki`'s `meshGradient` modifier, or export a PNG at 1x, 2x, or 3x scale.
 - **Persistence:** Grid state and saved colors autosave locally to a Room/SQLite database.
+- **Agent access (MCP):** Coding agents can read and edit the open mesh through an MCP server. See [below](#agent-access-mcp).
 
 ### Roadmap
 
@@ -21,6 +22,25 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 - [ ] Presets
 - [ ] Gradient animation
 - [ ] Undo/redo
+
+## Agent access (MCP)
+
+While Mesh is open, it serves an [MCP](https://modelcontextprotocol.io) server over Streamable HTTP at `http://127.0.0.1:7777/mcp`, so an agent can edit the gradient you are looking at. It listens only on localhost and rejects requests from other origins.
+
+| Tool | What it does |
+| --- | --- |
+| `get_mesh` | Returns the grid, canvas settings, saved colors with their IDs, and every point's position and color |
+| `update_point` | Moves and/or recolors the point at a row and column |
+| `add_color` | Adds a hex color to the custom palette and returns its ID |
+| `render_png` | Renders the mesh to a PNG so the agent can see the result |
+
+Connect from Claude Code:
+
+```bash
+claude mcp add --transport http mesh http://127.0.0.1:7777/mcp
+```
+
+Other clients take the same URL as a remote (HTTP) MCP server.
 
 ## Running and packaging
 
