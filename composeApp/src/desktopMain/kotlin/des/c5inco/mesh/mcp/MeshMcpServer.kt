@@ -69,7 +69,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             description = "Returns the current mesh as JSON: grid size, canvas settings, the saved colors with " +
                 "their IDs, and every point's row, column, position, and color ID. Positions are fractions of " +
                 "the canvas from 0 to 1, with (0, 0) at the top left.",
-        ) { getMesh() }
+        ) { configuration.awaitMeshLoaded(); getMesh() }
 
         addTool(
             name = "update_point",
@@ -85,7 +85,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 },
                 required = listOf("row", "col"),
             ),
-        ) { updatePoint(it) }
+        ) { configuration.awaitMeshLoaded(); updatePoint(it) }
 
         addTool(
             name = "add_color",
@@ -122,7 +122,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                     }
                 },
             ),
-        ) { renderPng(it) }
+        ) { configuration.awaitMeshLoaded(); renderPng(it) }
     }
 
     private suspend fun getMesh(): CallToolResult = withContext(Dispatchers.Main) {
@@ -171,15 +171,22 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         }
 
         val (current, currentColorId) = points[row][col]
-        // Only a new color must be in the palette; a point whose color was deleted keeps its transparent ID.
+        // Validate only what the caller sent, so echoing a point's current values back always works,
+        // including the transparent ID of a deleted color or an offset typed outside 0–1 in the side panel.
         val requestedColorId = args.long("colorId")
-        if (requestedColorId != null && configuration.availableColors.first().none { it.uid == requestedColorId }) {
+        if (requestedColorId != null && requestedColorId != currentColorId &&
+            configuration.availableColors.first().none { it.uid == requestedColorId }
+        ) {
             return@withContext error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
         }
+        val requestedX = args.float("x")
+        val requestedY = args.float("y")
+        if (requestedX?.let { it !in 0f..1f } == true || requestedY?.let { it !in 0f..1f } == true) {
+            return@withContext error("x and y must be between 0 and 1")
+        }
         val colorId = requestedColorId ?: currentColorId
-        val x = args.float("x") ?: current.x
-        val y = args.float("y") ?: current.y
-        if (x !in 0f..1f || y !in 0f..1f) return@withContext error("x and y must be between 0 and 1")
+        val x = requestedX ?: current.x
+        val y = requestedY ?: current.y
 
         configuration.updateMeshPoint(row, col, Offset(x, y) to colorId)
         val (offset, newColorId) = configuration.meshPoints[row][col]
@@ -227,8 +234,12 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         }
         val width = meshState.canvasWidth.takeIf { it > 0 } ?: 640
         val height = meshState.canvasHeight.takeIf { it > 0 } ?: 480
+        // A fixed canvas has no maximum size, so bound the bitmap.
+        if (width.toLong() * scale > MAX_RENDER_SIDE || height.toLong() * scale > MAX_RENDER_SIDE) {
+            return error("The render would be ${width * scale}×${height * scale} px; the limit is $MAX_RENDER_SIDE px per side, so use a smaller scale")
+        }
 
-        val image = renderComposeScene(width * scale, height * scale, Density(scale.toFloat())) {
+        val png = renderComposeScene(width * scale, height * scale, Density(scale.toFloat())) {
             Box(
                 Modifier.fillMaxSize().meshGradient(
                     points = points,
@@ -237,8 +248,10 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                     resolutionY = meshState.resolution,
                 )
             )
+        }.use { image ->
+            // Skia objects hold native memory until closed.
+            requireNotNull(image.encodeToData(EncodedImageFormat.PNG)).use { it.bytes }
         }
-        val png = requireNotNull(image.encodeToData(EncodedImageFormat.PNG)).bytes
         return CallToolResult(
             content = listOf(
                 ImageContent(data = Base64.encode(png), mimeType = "image/png"),
@@ -255,5 +268,6 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     companion object {
         const val DEFAULT_PORT = 7777
+        private const val MAX_RENDER_SIDE = 8192
     }
 }
