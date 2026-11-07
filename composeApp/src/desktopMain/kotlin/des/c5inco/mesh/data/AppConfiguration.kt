@@ -9,19 +9,29 @@ import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
+import data.MeshState
 import des.c5inco.mesh.common.toHexStringNoHash
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import model.MeshPoint
 import model.SavedColor
 import model.distributedEvenly
 import model.findColor
@@ -35,6 +45,7 @@ import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
+import kotlin.time.Duration.Companion.seconds
 
 data class AppUiState(
     val showPoints: Boolean = false,
@@ -81,6 +92,7 @@ class AppConfiguration(
 
     companion object {
         const val MAX_BLUR_LEVEL = 40
+        private val AUTOSAVE_DELAY = 1.seconds
 
         fun saveImage(image: BufferedImage, scale: Int) {
             try {
@@ -110,7 +122,8 @@ class AppConfiguration(
 
     var canvasBackgroundColor = MutableStateFlow(-1L)
 
-    var meshState = MutableStateFlow(repository.loadMeshState())
+    private val savedMeshState = repository.loadMeshState()
+    var meshState = MutableStateFlow(savedMeshState)
 
     /**
      * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
@@ -118,22 +131,79 @@ class AppConfiguration(
      */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
 
+    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
+    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
+
+    /** The state and points to persist, captured together on the UI thread after each change. */
+    private class PendingSave(val meshState: MeshState, val points: List<MeshPoint>)
+
+    @Volatile
+    private var latestSave: PendingSave? = null
+    private var lastWrittenSave: PendingSave? = null // Guarded by saveMutex.
+    private val saveMutex = Mutex()
+    /** Buffered so no request is lost before collection starts. */
+    private val saveRequests = Channel<Unit>(Channel.CONFLATED)
+
+    init {
+        // Save soon after edits stop, so a crash loses at most the last moment of work.
+        scope.launch {
+            @OptIn(FlowPreview::class)
+            saveRequests.receiveAsFlow().debounce(AUTOSAVE_DELAY).collect {
+                try {
+                    flushPendingSave()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    println("Autosave failed, retrying: ${e.message}")
+                    delay(AUTOSAVE_DELAY)
+                    saveRequests.trySend(Unit)
+                }
+            }
+        }
+    }
+
+    /** Captures the current state for autosave. Call on the UI thread after a change. */
+    private fun requestSave() {
+        val points = meshPoints.toList()
+        if (points.isEmpty()) return
+        latestSave = PendingSave(meshState.value, points.toSavedMeshPoints())
+        saveRequests.trySend(Unit)
+    }
+
+    /**
+     * Writes the latest captured state, if any. Safe from any thread, including a shutdown hook:
+     * it never waits on the UI thread, and writes never interleave.
+     */
+    suspend fun flushPendingSave() = saveMutex.withLock {
+        // Keep going until nothing newer was captured during a write.
+        while (true) {
+            val save = latestSave
+            if (save == null || save === lastWrittenSave) return@withLock
+            repository.saveMeshState(save.meshState)
+            repository.saveMeshPoints(save.points)
+            lastWrittenSave = save
+        }
+    }
+
     private val history = EditHistory<EditSnapshot>()
     val canUndo = history.canUndo
     val canRedo = history.canRedo
 
     private var resizedWhileLoading = false
 
+    // Declared after the fields it touches, which it may reach before the constructor finishes.
     private val loadMeshPoints = scope.async {
         val initialMeshPoints = repository.getMeshPoints().first()
         println("Loaded points: $initialMeshPoints")
-        val loadedPoints = if (initialMeshPoints.isEmpty()) {
-            defaultColorPoints
-        } else {
-            initialMeshPoints.toOffsetGrid()
-        }
         // Resizes need the palette, so the mesh counts as loaded only once it has arrived.
         val colorIds = paletteIds.first { it.isNotEmpty() }
+        val savedRows = savedMeshState.rows.coerceIn(2, 10)
+        val savedCols = savedMeshState.cols.coerceIn(2, 10)
+        val loadedPoints = when {
+            initialMeshPoints.isNotEmpty() -> initialMeshPoints.toOffsetGrid()
+            savedRows == defaultColorPoints.size && savedCols == defaultColorPoints[0].size -> defaultColorPoints
+            // No saved points but a saved size, as after a crash before the first points were written.
+            else -> generateMeshPointGrid(savedRows, savedCols, colorIds)
+        }
 
         withContext(Dispatchers.Main) {
             meshPoints.clear()
@@ -148,12 +218,13 @@ class AppConfiguration(
                     history.record(before, group = null)
                 }
             }
+            // The state file and the points table are written separately, so a crash between the two
+            // can leave a grid size that doesn't match the points; the points win.
+            meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
+            // Save a grid created here rather than loaded, edits made while loading, and any size repaired above.
+            if (initialMeshPoints.isEmpty() || resizedWhileLoading || meshState.value != savedMeshState) requestSave()
         }
     }
-
-    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
-    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
-
 
 
     val uiState = MutableStateFlow(
@@ -177,12 +248,14 @@ class AppConfiguration(
                 canvasWidthMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasWidth(width: Int) {
         meshState.update {
             it.copy(canvasWidth = width)
         }
+        requestSave()
     }
 
     fun updateCanvasHeightMode() {
@@ -192,12 +265,14 @@ class AppConfiguration(
                 canvasHeightMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasHeight(height: Int) {
         meshState.update {
             it.copy(canvasHeight = height)
         }
+        requestSave()
     }
 
     fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
@@ -233,10 +308,6 @@ class AppConfiguration(
         }
     }
 
-    fun saveMeshState() {
-        repository.saveMeshState(meshState.value)
-    }
-
     fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) = recordEdit(group = "point $row,$col") {
         val updatedPoints = meshPoints.withUpdatedMeshPoint(
             row = row,
@@ -257,13 +328,12 @@ class AppConfiguration(
         meshPoints.addAll(newPoints)
     }
 
+    /** Waits for loading, then saves the current state and points. */
     suspend fun saveMeshPoints() {
         loadMeshPoints.await()
 
-        // toList() takes an immutable copy, so a concurrent UI edit can't break the iteration.
-        val points = meshPoints.toList().toSavedMeshPoints()
-        println("Saved: $points")
-        repository.saveMeshPoints(points)
+        requestSave()
+        flushPendingSave()
     }
 
     /**
@@ -287,6 +357,7 @@ class AppConfiguration(
         updatedPoints.forEachIndexed { index, row ->
             meshPoints[index] = row
         }
+        requestSave()
     }
 
     fun exportMeshPointsAsCode() {
@@ -356,7 +427,10 @@ class AppConfiguration(
 
         val before = snapshot()
         edit()
-        if (snapshot() != before) history.record(before, group)
+        if (snapshot() != before) {
+            history.record(before, group)
+            requestSave()
+        }
     }
 
     private fun restore(snapshot: EditSnapshot) {
@@ -366,6 +440,7 @@ class AppConfiguration(
         canvasBackgroundColor.value = snapshot.canvasBackgroundColor
         meshPoints.clear()
         meshPoints.addAll(snapshot.points)
+        requestSave()
     }
 
     fun toggleShowingPoints() {

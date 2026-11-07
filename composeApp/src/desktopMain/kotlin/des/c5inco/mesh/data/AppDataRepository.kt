@@ -66,7 +66,6 @@ class AppDataRepository : DataRepository {
     }
 
     override suspend fun saveMeshPoints(points: List<MeshPoint>) {
-        database.meshPointDao().deleteAll()
-        database.meshPointDao().insertAll(*points.toTypedArray())
+        database.meshPointDao().replaceAll(points)
     }
 }

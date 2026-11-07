@@ -13,6 +13,7 @@ class FakeDataRepository(
     // Like the app's presets, the palette is never empty.
     initialColors: List<SavedColor> = List(3) { SavedColor(uid = it + 1L, red = 0, green = 0, blue = 0) },
     private val onSaveMeshPoints: (List<MeshPoint>) -> Unit = {},
+    private val initialMeshState: MeshState = MeshState(),
 ) : DataRepository {
     private val colors = MutableStateFlow(initialColors)
 
@@ -35,9 +36,15 @@ class FakeDataRepository(
 
     override fun deleteColor(color: SavedColor) = Unit
 
-    override fun loadMeshState(): MeshState = MeshState()
+    override fun loadMeshState(): MeshState = initialMeshState
 
-    override fun saveMeshState(state: MeshState) = Unit
+    @Volatile
+    var savedMeshState: MeshState? = null
+        private set
+
+    override fun saveMeshState(state: MeshState) {
+        savedMeshState = state
+    }
 
     override fun getMeshPoints(): Flow<List<MeshPoint>> = meshPoints
 
