@@ -151,28 +151,34 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         CallToolResult(content = listOf(TextContent(json.toString())))
     }
 
-    private suspend fun updatePoint(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
+    private suspend fun updatePoint(request: CallToolRequest): CallToolResult {
+        // Read the palette first: suspending after reading the point could let a drag or another
+        // call change it, and the stale values would then overwrite that edit.
+        val paletteIds = configuration.availableColors.first().map { it.uid }.toSet()
+        return withContext(Dispatchers.Main) { updatePoint(request, paletteIds) }
+    }
+
+    /** Runs on the UI thread without suspending, so the point can't change between read and write. */
+    private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult = run {
         val args = request.arguments ?: JsonObject(emptyMap())
-        val row = args.int("row") ?: return@withContext error("row is required")
-        val col = args.int("col") ?: return@withContext error("col is required")
+        val row = args.int("row") ?: return@run error("row is required")
+        val col = args.int("col") ?: return@run error("col is required")
         val points = configuration.meshPoints
         if (row !in points.indices || col !in points[row].indices) {
-            return@withContext error("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
+            return@run error("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
         }
 
         val (current, currentColorId) = points[row][col]
         // Validate only what the caller sent, so echoing a point's current values back always works,
         // including the transparent ID of a deleted color or an offset typed outside 0–1 in the side panel.
         val requestedColorId = args.long("colorId")
-        if (requestedColorId != null && requestedColorId != currentColorId &&
-            configuration.availableColors.first().none { it.uid == requestedColorId }
-        ) {
-            return@withContext error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
+        if (requestedColorId != null && requestedColorId != currentColorId && requestedColorId !in paletteIds) {
+            return@run error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
         }
         val requestedX = args.float("x")
         val requestedY = args.float("y")
         if (requestedX?.let { it !in 0f..1f } == true || requestedY?.let { it !in 0f..1f } == true) {
-            return@withContext error("x and y must be between 0 and 1")
+            return@run error("x and y must be between 0 and 1")
         }
         val colorId = requestedColorId ?: currentColorId
         val x = requestedX ?: current.x
