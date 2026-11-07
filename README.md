@@ -2,7 +2,7 @@
 
 # Mesh
 
-A desktop editor for creating mesh gradients in Compose, built with [Compose Multiplatform](https://www.jetbrains.com/compose-multiplatform/) and the [Jewel UI standalone toolkit](https://github.com/JetBrains/jewel). Gradients are rendered using [@sinasamaki](https://www.sinasamaki.com/mesh-gradients-in-jetpack-compose/)'s [`Modifier.meshGradient` implementation](https://gist.github.com/sinasamaki/05725557c945c5329fdba4a3494aaecb?ref=sinasamaki.com).
+A desktop editor for creating mesh gradients in Compose, built with [Compose Multiplatform](https://www.jetbrains.com/compose-multiplatform/) and the [Jewel UI standalone toolkit](https://github.com/JetBrains/jewel). Gradients are rendered using Compose's official [`MeshGradientPainter`](https://developer.android.com/develop/ui/compose/graphics/draw/mesh-gradient), with bicubic color interpolation and automatically inferred Bezier control points.
 
 ## Features and controls
 
@@ -11,7 +11,7 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 - **Palette:** Add hex colors to the saved palette, remove unused ones, and assign colors per point.
 - **Canvas:** Configure canvas dimensions (fixed size or fill) and background color.
 - **Undo/redo:** Undo with ⌘Z (Ctrl+Z) and redo with ⇧⌘Z (Ctrl+Shift+Z or Ctrl+Y). Covers point, grid, blur, and background edits, including ones an agent makes.
-- **Export:** Copy Kotlin code (`Pair<Offset, Color>` point lists via KotlinPoet) for `@sinasamaki`'s `meshGradient` modifier, or export a PNG at 1x, 2x, or 3x scale.
+- **Export:** Copy Kotlin code for an official `MeshGradientPainter` and a `meshGradientModifier` that includes the current blur and required imports. Apply it to a sized Composable with `Modifier.then(meshGradientModifier)`, or export a PNG at 1x, 2x, or 3x scale.
 - **Persistence:** Grid state and saved colors autosave locally to a Room/SQLite database.
 - **Agent access (MCP):** Coding agents can read and edit the open mesh through an MCP server. See [below](#agent-access-mcp).
 
@@ -19,7 +19,6 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 
 - [ ] Save and load configurations as documents
 - [ ] Grain overlay
-- [ ] Configurable gradient resolution
 - [ ] Presets
 - [ ] Gradient animation
 - [x] Undo/redo

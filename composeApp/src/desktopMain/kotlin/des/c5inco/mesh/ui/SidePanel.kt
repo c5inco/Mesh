@@ -458,7 +458,7 @@ private fun DeleteColorConfirmation(
     onConfirm: () -> Unit,
 ) {
     PopupContainer(
-        onDismissRequest = onCancel,
+        onDismissRequest = { onCancel() },
         // Open toward the canvas: the side panel sits against the window's right edge, and Jewel
         // doesn't move popups back inside the window horizontally.
         horizontalAlignment = Alignment.End,

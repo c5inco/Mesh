@@ -243,8 +243,10 @@ val desktopUnitTest by tasks.registering(Test::class) {
     useJUnitPlatform {
         excludeTags("spectre")
     }
-    // Unit tests need the Swing event thread (Dispatchers.Main) but no display.
-    systemProperty("java.awt.headless", "true")
+    // Unit tests need the Swing event thread (Dispatchers.Main). On Linux without an X display it can
+    // only start headless; tests that need a display, such as the clipboard, then skip themselves.
+    val noDisplay = System.getProperty("os.name").startsWith("Linux") && System.getenv("DISPLAY").isNullOrEmpty()
+    systemProperty("java.awt.headless", noDisplay.toString())
 }
 
 tasks.named("check") {

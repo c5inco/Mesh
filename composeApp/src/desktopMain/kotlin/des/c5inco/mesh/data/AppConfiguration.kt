@@ -1,10 +1,15 @@
 package des.c5inco.mesh.data
 
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.MeshGradientPainter
+import androidx.compose.ui.graphics.TileMode
 import com.squareup.kotlinpoet.CodeBlock
-import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
+import com.squareup.kotlinpoet.FileSpec
+import com.squareup.kotlinpoet.MemberName
 import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
@@ -46,6 +51,7 @@ import java.awt.image.BufferedImage
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
 
 data class AppUiState(
@@ -367,47 +373,80 @@ class AppConfiguration(
 
     fun exportMeshPointsAsCode() {
         scope.launch {
-            val availableColorsAsList = availableColors.first()
+            loadMeshPoints.await()
+            val availableColorsAsList = availableColors.first { it.isNotEmpty() }
+            // toList() takes an immutable copy, so a concurrent UI edit can't change it mid-export.
+            val colorPoints = meshPoints.toList()
+            val blurRadius = (meshState.value.blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
-            val offsetType = Offset::class.asClassName()
-            val colorType = Color::class.asClassName()
-            val pairType = Pair::class.asClassName().parameterizedBy(offsetType, colorType)
-            val innerListType = List::class.asClassName().parameterizedBy(pairType)
-            val outerListType = List::class.asClassName().parameterizedBy(innerListType)
-
-            val listInitializer = CodeBlock.builder()
-                .add("listOf(\n")
+            val painterType = MeshGradientPainter::class.asClassName()
+            val initializer = CodeBlock.builder()
+                .add(
+                    "%T(rows = %L, columns = %L, hasBicubicColor = true) {\n",
+                    painterType,
+                    colorPoints.lastIndex,
+                    colorPoints.first().lastIndex,
+                )
                 .indent()
 
-            meshPoints.forEachIndexed { _, innerList ->
-                listInitializer.add("listOf(\n")
-                listInitializer.indent()
-
-                innerList.forEachIndexed { _, pair ->
+            colorPoints.forEachIndexed { row, points ->
+                points.forEachIndexed { column, pair ->
                     val hexString = availableColorsAsList.findColor(pair.second)
                         .toHexStringNoHash(includeAlpha = true)
-                    listInitializer.add(
-                        "Offset(%Lf, %Lf) to Color(0x%L),\n",
+                    initializer.add(
+                        "setVertex(%L, %L, %T(%Lf, %Lf), %T(0x%L))\n",
+                        row,
+                        column,
+                        Offset::class,
                         pair.first.x,
                         pair.first.y,
-                        hexString
+                        Color::class,
+                        hexString,
                     )
                 }
-
-                listInitializer.unindent()
-                listInitializer.add("),\n")
             }
 
-            listInitializer.unindent()
-            listInitializer.add(")")
+            initializer.unindent()
+            initializer.add("}")
 
-            val codeSpec = PropertySpec.builder("colorPoints", outerListType)
-                .initializer(listInitializer.build())
+            val codeSpec = PropertySpec.builder("meshGradient", painterType)
+                .initializer(initializer.build())
                 .build()
 
+            val modifierInitializer = CodeBlock.builder()
+                .add("%T", Modifier::class)
+            if (blurRadius > 0f) {
+                modifierInitializer
+                    .add("\n")
+                    .indent()
+                    .beginControlFlow(".%M", MemberName("androidx.compose.ui.graphics", "graphicsLayer"))
+                    .addStatement(
+                        "renderEffect = %T(%Lf, %Lf, %T.Clamp)",
+                        BlurEffect::class,
+                        blurRadius,
+                        blurRadius,
+                        TileMode::class,
+                    )
+                    .endControlFlow()
+                    .unindent()
+            }
+            modifierInitializer.indent()
+                .add(".%M(meshGradient, sizeToIntrinsics = false)", MemberName("androidx.compose.ui.draw", "paint"))
+                .unindent()
+
+            val code = FileSpec.builder("", "MeshGradient")
+                .addProperty(codeSpec)
+                .addProperty(
+                    PropertySpec.builder("meshGradientModifier", Modifier::class)
+                        .initializer(modifierInitializer.build())
+                        .build(),
+                )
+                .build()
+                .toString()
+
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-            clipboard.setContents(StringSelection(codeSpec.toString()), null)
-            println(codeSpec.toString())
+            clipboard.setContents(StringSelection(code), null)
+            println(code)
         }
     }
 

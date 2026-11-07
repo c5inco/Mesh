@@ -13,7 +13,6 @@ data class MeshState(
     val canvasWidth: Int = 0,
     val canvasHeightMode: DimensionMode = DimensionMode.Fill,
     val canvasHeight: Int = 0,
-    val resolution: Int = 10,
     val blurLevel: Float = 0f,
     val rows: Int = 3,
     val cols: Int = 4,
