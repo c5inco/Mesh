@@ -64,11 +64,12 @@ private val defaultColorPoints = listOf(
     )
 )
 
-/** The parts of the document that undo and redo restore. */
+/**
+ * The parts of the document that undo and redo restore. The grid size comes from [points] rather
+ * than [MeshState], which changes before a regenerated grid arrives.
+ */
 private data class EditSnapshot(
     val points: List<List<Pair<Offset, Long>>>,
-    val rows: Int,
-    val cols: Int,
     val blurLevel: Float,
     val canvasBackgroundColor: Long,
 )
@@ -269,7 +270,12 @@ class AppConfiguration(
         }
     }
 
-    fun removeColorFromMeshPoints(colorToRemove: Long) = recordEdit {
+    /**
+     * Makes points that used a deleted palette color transparent. Palette deletion is not undoable,
+     * so this rewrites history too rather than letting undo bring back the deleted ID.
+     */
+    fun removeColorFromMeshPoints(colorToRemove: Long) {
+        history.replaceAll { it.copy(points = it.points.replaceColor(colorToRemove, replacementColorId = -1L)) }
         val updatedPoints = meshPoints.replaceColor(
             colorId = colorToRemove,
             replacementColorId = -1L,
@@ -335,17 +341,21 @@ class AppConfiguration(
 
     private fun snapshot() = EditSnapshot(
         points = meshPoints.toList(),
-        rows = meshState.value.rows,
-        cols = meshState.value.cols,
         blurLevel = meshState.value.blurLevel,
         canvasBackgroundColor = canvasBackgroundColor.value,
     )
 
+    private fun requestedGrid() = meshState.value.let { it.rows to it.cols }
+
     /** Runs [edit] and adds an undo step if it changed anything. */
     private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
+        // Before the saved mesh loads there is nothing to go back to.
+        if (meshPoints.isEmpty()) return edit()
+
         val before = snapshot()
+        val gridBefore = requestedGrid()
         edit()
-        if (snapshot() != before) history.record(before, group)
+        if (snapshot() != before || requestedGrid() != gridBefore) history.record(before, group)
     }
 
     private fun restore(snapshot: EditSnapshot) {
@@ -355,7 +365,7 @@ class AppConfiguration(
         pendingGeneration?.cancel()
 
         meshState.update {
-            it.copy(rows = snapshot.rows, cols = snapshot.cols, blurLevel = snapshot.blurLevel)
+            it.copy(rows = snapshot.points.size, cols = snapshot.points[0].size, blurLevel = snapshot.blurLevel)
         }
         canvasBackgroundColor.value = snapshot.canvasBackgroundColor
         meshPoints.clear()
