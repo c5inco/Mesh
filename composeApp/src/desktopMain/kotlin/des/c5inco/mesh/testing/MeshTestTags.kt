@@ -13,6 +13,9 @@ object MeshTestTags {
     const val DELETE_COLOR_CANCEL = "mesh.delete-color-cancel"
     const val MCP_SERVER_ENABLED = "mesh.mcp-server-enabled"
     const val MCP_SERVER_STATUS = "mesh.mcp-server-status"
+    const val DOCUMENT_NAME = "mesh.document-name"
+    const val NEW_DOCUMENT = "mesh.new-document"
+    const val UNSAVED_CHANGES_PROMPT = "mesh.unsaved-changes-prompt"
 
     fun pointColor(row: Int, col: Int): String = "mesh.point-color-$row-$col"
 

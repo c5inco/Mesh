@@ -4,7 +4,6 @@ import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.mcp.McpServerState.Status
 import des.c5inco.mesh.testing.FakeDataRepository
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
@@ -18,7 +17,7 @@ import java.util.UUID
 import java.util.prefs.Preferences
 
 class McpServerControllerTest {
-    private val configuration = AppConfiguration(FakeDataRepository(meshPoints = flowOf(emptyList())))
+    private val configuration = AppConfiguration(FakeDataRepository())
     private val preferences = Preferences.userRoot().node("des/c5inco/mesh/test-${UUID.randomUUID()}")
     private val controllers = mutableListOf<McpServerController>()
 

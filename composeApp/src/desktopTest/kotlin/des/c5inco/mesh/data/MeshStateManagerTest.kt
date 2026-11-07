@@ -3,7 +3,6 @@ package des.c5inco.mesh.data
 import data.DimensionMode
 import java.nio.file.Files
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Test
 
 class MeshStateManagerTest {
@@ -26,10 +25,6 @@ class MeshStateManagerTest {
             assertEquals(0.5f, state.blurLevel)
             assertEquals(5, state.rows)
             assertEquals(6, state.cols)
-
-            MeshStateManager.saveState(state)
-            assertFalse(settings.readText().contains("resolution"))
-            assertEquals(state, MeshStateManager.loadState())
         } finally {
             System.setProperty("user.home", originalHome)
             home.deleteRecursively()

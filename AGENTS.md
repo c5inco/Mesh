@@ -33,9 +33,10 @@ The project follows a standard Kotlin Multiplatform structure:
 
 ## Key Files & Classes
 
-- **`AppConfiguration`**: Central class for managing global app state (`AppUiState`, `MeshState`) and repository access.
+- **`AppConfiguration`**: Central class for app state: the open document (points, `MeshState`, background color, custom colors, `DocumentStatus`), its undo history and autosave, and `AppUiState`. New, Open, and Save go through it, and the MCP tools act on it.
+- **`MeshDocument`**: The `.mesh` file format. Colors are stored by value; preset colors stay global.
 - **`AppRoomDatabase`**: The Room database definition.
-- **`AppDataRepository`**: Handles data operations for colors and mesh points.
+- **`AppDataRepository`**: Preset colors (Room), the session (last open document), and reading the pre-documents mesh for migration.
 - **`Main.kt`**: Sets up the window, theme (Jewel), and launches the app.
 
 ## Development & Build Commands

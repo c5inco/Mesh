@@ -29,9 +29,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -52,7 +50,8 @@ import kotlin.math.roundToInt
 /**
  * Exposes the open mesh to MCP clients over Streamable HTTP on localhost.
  *
- * Tools act on the same [AppConfiguration] the window shows, so edits appear on the canvas live.
+ * Tools act on the document open in the window, through the same [AppConfiguration], so edits appear on the
+ * canvas live. Opening another document switches the tools to it; color IDs belong to the open document.
  */
 class MeshMcpServer(private val configuration: AppConfiguration) {
 
@@ -70,9 +69,10 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     ) {
         addTool(
             name = "get_mesh",
-            description = "Returns the current mesh as JSON: grid size, canvas settings, the saved colors with " +
-                "their IDs, and every point's row, column, position, and color ID. Positions are fractions of " +
-                "the canvas from 0 to 1, with (0, 0) at the top left.",
+            description = "Returns the open document's mesh as JSON: the document's name and file, grid size, " +
+                "canvas settings, the preset and custom colors with their IDs, and every point's row, column, " +
+                "position, and color ID. Positions are fractions of the canvas from 0 to 1, with (0, 0) at the top " +
+                "left. Color IDs belong to the open document and change when another document opens.",
         ) { configuration.awaitMeshLoaded(); getMesh() }
 
         addTool(
@@ -93,7 +93,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
         addTool(
             name = "add_color",
-            description = "Adds a color to the custom palette and returns its color ID.",
+            description = "Adds a custom color to the open document and returns its color ID.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("hex") {
@@ -103,7 +103,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 },
                 required = listOf("hex"),
             ),
-        ) { addColor(it) }
+        ) { configuration.awaitMeshLoaded(); addColor(it) }
 
         addTool(
             name = "undo",
@@ -130,9 +130,15 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     }
 
     private suspend fun getMesh(): CallToolResult = withContext(Dispatchers.Main) {
-        val colors = configuration.availableColors.first()
+        val colors = configuration.palette()
         val meshState = configuration.meshState.value
+        val document = configuration.document.value
         val json = buildJsonObject {
+            put("document", buildJsonObject {
+                put("name", document.name)
+                put("file", document.file?.absolutePath)
+                put("modified", document.modified)
+            })
             put("rows", meshState.rows)
             put("cols", meshState.cols)
             put("canvasWidth", meshState.canvasWidth)
@@ -165,14 +171,12 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         CallToolResult(content = listOf(TextContent(json.toString())))
     }
 
-    private suspend fun updatePoint(request: CallToolRequest): CallToolResult {
-        // Read the palette first: suspending after reading the point could let a drag or another
-        // call change it, and the stale values would then overwrite that edit.
-        val paletteIds = configuration.availableColors.first().map { it.uid }.toSet()
-        return withContext(Dispatchers.Main) { updatePoint(request, paletteIds) }
+    /** Runs on the UI thread without suspending, so the point and palette can't change between read and write. */
+    private suspend fun updatePoint(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
+        val paletteIds = configuration.palette().map { it.uid }.toSet()
+        updatePoint(request, paletteIds)
     }
 
-    /** Runs on the UI thread without suspending, so the point can't change between read and write. */
     private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult = run {
         val args = request.arguments ?: JsonObject(emptyMap())
         val row = args.int("row") ?: return@run error("row is required")
@@ -226,9 +230,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             alpha = color.alpha,
         )
 
-        val colorId = configuration.addColor(savedColor)
-        // Wait until the palette lists the color, so update_point accepts its ID right away.
-        withTimeout(5_000) { configuration.availableColors.first { colors -> colors.any { it.uid == colorId } } }
+        val colorId = withContext(Dispatchers.Main) { configuration.addColor(savedColor) }
         return CallToolResult(content = listOf(TextContent("Added $hex as color ID $colorId")))
     }
 
@@ -236,8 +238,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         val scale = request.arguments?.int("scale") ?: 1
         if (scale !in 1..3) return error("scale must be 1, 2, or 3")
 
-        val colors = configuration.availableColors.first()
         val (meshState, points) = withContext(Dispatchers.Main) {
+            val colors = configuration.palette()
             configuration.meshState.value to configuration.meshPoints.map { row ->
                 row.map { (offset, colorId) -> offset to colors.findColor(colorId) }
             }

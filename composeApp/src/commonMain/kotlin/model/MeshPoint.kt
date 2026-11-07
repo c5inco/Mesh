@@ -83,6 +83,19 @@ fun generateMeshPointGrid(
     }
 }
 
+/** The grid a new mesh starts with: three rows that curve down in the middle, colored by the first three [colorIds]. */
+fun defaultMeshPointGrid(colorIds: List<Long>): List<List<Pair<Offset, Long>>> {
+    require(colorIds.isNotEmpty()) { "A mesh requires at least one color" }
+    fun row(index: Int, vararg ys: Float) = ys.mapIndexed { col, y ->
+        Offset(listOf(0f, .33f, .67f, 1f)[col], y) to colorIds[index % colorIds.size]
+    }
+    return listOf(
+        row(0, 0f, 0f, 0f, 0f),
+        row(1, .4f, .8f, .8f, .4f),
+        row(2, 1f, 1f, 1f, 1f),
+    )
+}
+
 fun List<List<Pair<Offset, Long>>>.withUpdatedMeshPoint(
     row: Int,
     col: Int,

@@ -3,23 +3,14 @@ package des.c5inco.mesh.data
 import data.MeshState
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
+/** Reads the canvas settings of the single mesh Mesh saved before it had documents. */
 object MeshStateManager {
-    private val meshStateFile = File(System.getProperty("user.home") + File.separator +
-            ".mesh" + File.separator + "mesh1.json")
+    private val meshStateFile get() = File(meshDataDirectory(), "mesh1.json")
     // Older saved settings may include the custom renderer's resolution.
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun saveState(config: MeshState) {
-        val jsonString = json.encodeToString(MeshState.serializer(), config)
-        println("Saved meshState: $jsonString")
-        // Write a temporary file and move it into place, so a crash mid-write keeps the old state.
-        val tempFile = File(meshStateFile.parentFile, meshStateFile.name + ".tmp")
-        tempFile.writeText(jsonString)
-        Files.move(tempFile.toPath(), meshStateFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    }
+    fun hasSavedState(): Boolean = meshStateFile.exists()
 
     fun loadState(): MeshState {
         return try {

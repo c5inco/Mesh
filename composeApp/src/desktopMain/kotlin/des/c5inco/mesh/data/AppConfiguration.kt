@@ -14,41 +14,51 @@ import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
+import data.FIRST_CUSTOM_COLOR_ID
+import data.MeshDocument
 import data.MeshState
+import data.OpenedMesh
+import data.Session
+import data.TRANSPARENT_COLOR_ID
+import data.meshDocumentOf
+import data.open
 import des.c5inco.mesh.common.toHexStringNoHash
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import model.MeshPoint
 import model.SavedColor
+import model.defaultMeshPointGrid
 import model.distributedEvenly
 import model.findColor
 import model.generateMeshPointGrid
 import model.replaceColor
-import model.toOffsetGrid
-import model.toSavedMeshPoints
 import model.withUpdatedMeshPoint
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.imageio.ImageIO
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
@@ -58,37 +68,27 @@ data class AppUiState(
     val constrainEdgePoints: Boolean = true,
 )
 
-private val defaultColorPoints = listOf(
-    listOf(
-        Offset(0f, 0f) to 1L,
-        Offset(.33f, 0f) to 1L,
-        Offset(.67f, 0f) to 1L,
-        Offset(1f, 0f) to 1L,
-    ),
-    listOf(
-        Offset(0f, .4f) to 2L,
-        Offset(.33f, .8f) to 2L,
-        Offset(.67f, .8f) to 2L,
-        Offset(1f, .4f) to 2L,
-    ),
-    listOf(
-        Offset(0f, 1f) to 3L,
-        Offset(.33f, 1f) to 3L,
-        Offset(.67f, 1f) to 3L,
-        Offset(1f, 1f) to 3L,
-    )
-)
+/** The open document: the file it was opened from or saved to, if any, and whether it has edits the file lacks. */
+data class DocumentStatus(
+    val file: File? = null,
+    val modified: Boolean = false,
+) {
+    val name: String get() = file?.nameWithoutExtension ?: "Untitled"
+}
 
-/**
- * The parts of the document that undo and redo restore. The grid size comes from [points] rather
- * than [MeshState], which changes before a regenerated grid arrives.
- */
+/** The parts of the document that undo and redo restore. The grid size comes from [points]. */
 private data class EditSnapshot(
     val points: List<List<Pair<Offset, Long>>>,
     val blurLevel: Float,
     val canvasBackgroundColor: Long,
+    val customColors: List<SavedColor>,
 )
 
+/**
+ * Holds the open document and the app's UI state. Points, canvas settings, the background color, and
+ * custom colors belong to the document; preset colors are global and come from [DataRepository].
+ * The document is written only on the UI thread.
+ */
 class AppConfiguration(
     private val repository: DataRepository,
     showPoints: Boolean = false,
@@ -98,6 +98,7 @@ class AppConfiguration(
 
     companion object {
         const val MAX_BLUR_LEVEL = 40
+        const val MIGRATED_DOCUMENT_NAME = "My Mesh"
         private val AUTOSAVE_DELAY = 1.seconds
 
         fun saveImage(image: BufferedImage, scale: Int) {
@@ -118,37 +119,67 @@ class AppConfiguration(
     }
 
     val presetColors = repository.getPresetColors()
-    val customColors = repository.getCustomColors()
-    val availableColors = repository.getAllColors()
+    val customColors = MutableStateFlow(emptyList<SavedColor>())
+    val availableColors = combine(presetColors, customColors) { presets, custom -> presets + custom }
+
+    /** The presets the open document's colors were resolved against; empty until the first document loads. */
+    @Volatile
+    private var loadedPresetColors = emptyList<SavedColor>()
+
+    /** Every color the open document can use. Call on the UI thread. */
+    fun palette(): List<SavedColor> = loadedPresetColors + customColors.value
 
     /** Palette IDs that new grid points take their colors from; non-empty once the mesh has loaded. */
-    private val paletteIds = availableColors
-        .map { colors -> colors.map(SavedColor::uid) }
-        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+    private fun paletteIds() = palette().map(SavedColor::uid)
 
-    var canvasBackgroundColor = MutableStateFlow(-1L)
+    /** Custom color IDs are never reused, so an ID from a closed document can't name a color in the open one. */
+    private val nextCustomColorId = AtomicLong(FIRST_CUSTOM_COLOR_ID)
 
-    private val savedMeshState = repository.loadMeshState()
-    var meshState = MutableStateFlow(savedMeshState)
+    val canvasBackgroundColor = MutableStateFlow(TRANSPARENT_COLOR_ID)
+
+    private val session = repository.loadSession()
+    private val startupFile = session?.lastDocument?.let(::File)
+
+    /** The document to reopen, read now so that edits made while it loads apply on top of its settings. */
+    private val startupDocument = startupFile?.let(::readDocumentOrNull)
+
+    val meshState = MutableStateFlow(
+        startupDocument?.meshState ?: if (session == null) repository.loadLegacyMeshState() else MeshState()
+    )
 
     /**
-     * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
+     * The grid of points. Like the rest of the document, it is written only on the UI thread:
      * background work such as loading hands its result to the UI thread.
      */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
 
-    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
-    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
+    val document = MutableStateFlow(DocumentStatus())
 
-    /** The state and points to persist, captured together on the UI thread after each change. */
-    private class PendingSave(val meshState: MeshState, val points: List<MeshPoint>)
+    /** Counts edits, so a save can tell whether the document changed after the save captured it. */
+    private val edits = AtomicLong()
+
+    /** Bumped whenever another document replaces the open one, so a save of the old one can't touch the new one. */
+    private val generation = AtomicInteger()
+
+    /** The size the canvas fills in the window, which a document in Fill mode takes instead of its saved size. */
+    private var measuredCanvasSize: Pair<Int, Int>? = null
+
+    /** Suspends until the startup document has loaded, so callers never see an empty grid or palette. */
+    suspend fun awaitMeshLoaded() = loadStartupDocument.await()
+
+    /** The open document and the file to autosave it to, captured together on the UI thread after each edit. */
+    private class PendingSave(val document: MeshDocument, val file: File, val generation: Int, val edits: Long)
 
     @Volatile
     private var latestSave: PendingSave? = null
-    private var lastWrittenSave: PendingSave? = null // Guarded by saveMutex.
+    @Volatile
+    private var lastWrittenSave: PendingSave? = null // Written under saveMutex.
     private val saveMutex = Mutex()
     /** Buffered so no request is lost before collection starts. */
     private val saveRequests = Channel<Unit>(Channel.CONFLATED)
+
+    /** The session to record for the next launch; only the latest matters. */
+    private val sessions = MutableStateFlow<Session?>(null)
 
     init {
         // Save soon after edits stop, so a crash loses at most the last moment of work.
@@ -165,18 +196,46 @@ class AppConfiguration(
                 }
             }
         }
+        scope.launch(Dispatchers.IO) {
+            sessions.filterNotNull().collect { session ->
+                try {
+                    repository.saveSession(session)
+                } catch (e: IOException) {
+                    println("Error saving session: ${e.message}")
+                }
+            }
+        }
     }
 
-    /** Captures the current state for autosave. Call on the UI thread after a change. */
-    private fun requestSave() {
-        val points = meshPoints.toList()
-        if (points.isEmpty()) return
-        latestSave = PendingSave(meshState.value, points.toSavedMeshPoints())
+    /** Call on the UI thread after the document changes: marks it edited and schedules its autosave. */
+    private fun markEdited() {
+        // The loaded document replaces the mesh, so the load applies edits made before then itself.
+        if (meshPoints.isEmpty()) {
+            editedWhileLoading = true
+            return
+        }
+        edits.incrementAndGet()
+        document.update { it.copy(modified = true) }
+        captureSave()
+    }
+
+    /** Captures the open document for autosave. An untitled document has no file to save to. */
+    private fun captureSave() {
+        val file = document.value.file ?: return
+        latestSave = PendingSave(currentDocument(), file, generation.get(), edits.get())
         saveRequests.trySend(Unit)
     }
 
+    private fun currentDocument() = meshDocumentOf(
+        meshState = meshState.value,
+        backgroundColorId = canvasBackgroundColor.value,
+        customColors = customColors.value,
+        points = meshPoints.toList(),
+        colors = palette(),
+    )
+
     /**
-     * Writes the latest captured state, if any. Safe from any thread, including a shutdown hook:
+     * Writes the latest captured document, if any. Safe from any thread, including a shutdown hook:
      * it never waits on the UI thread, and writes never interleave.
      */
     suspend fun flushPendingSave() = saveMutex.withLock {
@@ -184,54 +243,186 @@ class AppConfiguration(
         while (true) {
             val save = latestSave
             if (save == null || save === lastWrittenSave) return@withLock
-            repository.saveMeshState(save.meshState)
-            repository.saveMeshPoints(save.points)
+            writeDocument(save.document, save.file)
             lastWrittenSave = save
+            // The file now holds the document, unless it was edited or replaced since the capture.
+            document.update {
+                val current = generation.get() == save.generation && it.file == save.file && edits.get() == save.edits
+                if (current) it.copy(modified = false) else it
+            }
         }
+    }
+
+    /**
+     * Writes the open document's pending autosave, if any. Call on the UI thread right before replacing the
+     * document, with no suspension in between, so that no edit slips in after the write and is dropped.
+     */
+    private suspend fun finishPendingSave() {
+        while (latestSave.let { it != null && it !== lastWrittenSave }) flushPendingSave()
     }
 
     private val history = EditHistory<EditSnapshot>()
     val canUndo = history.canUndo
     val canRedo = history.canRedo
 
+    // Edits made before the startup document loads, which the load applies on top of it.
+    private var editedWhileLoading = false
     private var resizedWhileLoading = false
+    private var backgroundSetWhileLoading = false
 
     // Declared after the fields it touches, which it may reach before the constructor finishes.
-    private val loadMeshPoints = scope.async {
-        val initialMeshPoints = repository.getMeshPoints().first()
-        println("Loaded points: $initialMeshPoints")
-        // Resizes need the palette, so the mesh counts as loaded only once it has arrived.
-        val colorIds = paletteIds.first { it.isNotEmpty() }
-        val savedRows = savedMeshState.rows.coerceIn(2, 10)
-        val savedCols = savedMeshState.cols.coerceIn(2, 10)
-        val loadedPoints = when {
-            initialMeshPoints.isNotEmpty() -> initialMeshPoints.toOffsetGrid()
-            savedRows == defaultColorPoints.size && savedCols == defaultColorPoints[0].size -> defaultColorPoints
-            // No saved points but a saved size, as after a crash before the first points were written.
-            else -> generateMeshPointGrid(savedRows, savedCols, colorIds)
+    private val loadStartupDocument = scope.async {
+        // Opening a document needs the presets, so the mesh counts as loaded only once they have arrived.
+        val presets = repository.getPresetColors().first { it.isNotEmpty() }
+        val startup = when {
+            startupDocument != null -> StartupDocument(startupDocument, startupFile)
+            session == null -> migrateLegacyMesh()
+            else -> StartupDocument(null, null)
         }
-
         withContext(Dispatchers.Main) {
-            meshPoints.clear()
-            meshPoints.addAll(loadedPoints)
-            // Apply a resize requested while loading, as an undo step back to the loaded grid.
-            if (resizedWhileLoading) {
-                val (rows, cols) = meshState.value.let { it.rows to it.cols }
-                if (rows != loadedPoints.size || cols != loadedPoints[0].size) {
-                    val before = snapshot()
-                    meshPoints.clear()
-                    meshPoints.addAll(generateMeshPointGrid(rows, cols, colorIds))
-                    history.record(before, group = null)
-                }
-            }
-            // The state file and the points table are written separately, so a crash between the two
-            // can leave a grid size that doesn't match the points; the points win.
-            meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
-            // Save a grid created here rather than loaded, edits made while loading, and any size repaired above.
-            if (initialMeshPoints.isEmpty() || resizedWhileLoading || meshState.value != savedMeshState) requestSave()
+            loadedPresetColors = presets
+            showStartupDocument(startup)
         }
     }
 
+    private class StartupDocument(val document: MeshDocument?, val file: File?, val modified: Boolean = false)
+
+    /** Saves the single mesh from before documents existed as the first document, so upgrading loses nothing. */
+    private suspend fun migrateLegacyMesh(): StartupDocument {
+        val legacyMesh = repository.loadLegacyMesh() ?: return StartupDocument(null, null)
+        val file = generateSequence(1) { it + 1 }
+            .map { n -> if (n == 1) MIGRATED_DOCUMENT_NAME else "$MIGRATED_DOCUMENT_NAME $n" }
+            .map { name -> File(repository.documentsDirectory, "$name.${MeshDocument.FILE_EXTENSION}") }
+            .first { !it.exists() }
+        return try {
+            writeDocument(legacyMesh, file)
+            StartupDocument(legacyMesh, file)
+        } catch (e: IOException) {
+            // Keep the mesh open as unsaved changes rather than lose it.
+            println("Error saving the migrated mesh: ${e.message}")
+            StartupDocument(legacyMesh, null, modified = true)
+        }
+    }
+
+    private fun showStartupDocument(startup: StartupDocument) {
+        val editedState = meshState.value
+        val colorsAddedWhileLoading = customColors.value
+        val backgroundWhileLoading = canvasBackgroundColor.value
+        show(startup.document, startup.file, startup.modified)
+        if (!editedWhileLoading) return
+
+        // Colors added while loading have IDs that no color in the document uses.
+        customColors.update { it + colorsAddedWhileLoading }
+        if (backgroundSetWhileLoading) canvasBackgroundColor.value = backgroundWhileLoading
+        meshState.value = editedState.copy(rows = meshPoints.size, cols = meshPoints[0].size)
+        // Apply a resize requested while loading, as an undo step back to the loaded grid.
+        if (resizedWhileLoading && (editedState.rows != meshPoints.size || editedState.cols != meshPoints[0].size)) {
+            val before = snapshot()
+            val generatedPoints = generateMeshPointGrid(editedState.rows, editedState.cols, paletteIds())
+            meshPoints.clear()
+            meshPoints.addAll(generatedPoints)
+            meshState.update { it.copy(rows = editedState.rows, cols = editedState.cols) }
+            history.record(before, group = null)
+        }
+        markEdited()
+    }
+
+    /** Replaces the open document. Call on the UI thread once the presets have loaded. */
+    private fun show(replacement: MeshDocument?, file: File?, modified: Boolean = false) {
+        val opened = replacement?.open(loadedPresetColors, nextCustomColorId::getAndIncrement)
+            ?: OpenedMesh(MeshState(), TRANSPARENT_COLOR_ID, emptyList(), defaultMeshPointGrid(paletteIds()))
+        generation.incrementAndGet()
+        // In Fill mode the canvas keeps the size it fills in the window, not the size saved with the file.
+        val measured = measuredCanvasSize
+        meshState.value = opened.meshState.let { state ->
+            if (measured == null) return@let state
+            state.copy(
+                canvasWidth = if (state.canvasWidthMode == DimensionMode.Fill) measured.first else state.canvasWidth,
+                canvasHeight = if (state.canvasHeightMode == DimensionMode.Fill) measured.second else state.canvasHeight,
+            )
+        }
+        canvasBackgroundColor.value = opened.backgroundColorId
+        customColors.value = opened.customColors
+        meshPoints.clear()
+        meshPoints.addAll(opened.points)
+        history.clear()
+        document.value = DocumentStatus(file, modified)
+        sessions.value = Session(lastDocument = file?.absolutePath)
+    }
+
+    /** Replaces the open document with a new, untitled one. */
+    suspend fun newDocument(): Boolean = replaceDocument(null, null)
+
+    /** Opens the document in [file], replacing the open one; returns false and says why when it can't. */
+    suspend fun openDocument(file: File): Boolean {
+        val replacement = withContext(Dispatchers.IO) { readDocumentOrNull(file) } ?: return false
+        return replaceDocument(replacement, file)
+    }
+
+    private suspend fun replaceDocument(replacement: MeshDocument?, file: File?): Boolean {
+        loadStartupDocument.await()
+        return withContext(Dispatchers.Main) {
+            try {
+                // The open document's last edits go to its file before it closes.
+                finishPendingSave()
+            } catch (e: IOException) {
+                Notifications.send("Couldn't save ${document.value.name}: ${e.message}")
+                return@withContext false
+            }
+            show(replacement, file)
+            true
+        }
+    }
+
+    /** Writes the open document to [file], which becomes its file; returns false and says why when it can't. */
+    suspend fun saveDocument(file: File): Boolean {
+        loadStartupDocument.await()
+        return withContext(Dispatchers.Main) {
+            try {
+                // The current file gets the last edits too, even when this saves the document elsewhere.
+                finishPendingSave()
+                val save = PendingSave(currentDocument(), file, generation.get(), edits.get())
+                saveMutex.withLock { writeDocument(save.document, file) }
+                // Another document may have opened while the file was being written.
+                if (generation.get() == save.generation) {
+                    document.value = DocumentStatus(file, modified = edits.get() != save.edits)
+                    sessions.value = Session(lastDocument = file.absolutePath)
+                    // Edits made during the write belong in the document's new file.
+                    if (document.value.modified) captureSave()
+                }
+                Notifications.send("💾 Saved ${file.name}")
+                true
+            } catch (e: IOException) {
+                Notifications.send("Couldn't save ${file.name}: ${e.message}")
+                false
+            }
+        }
+    }
+
+    /** Reads a document, or says why it can't and returns null. */
+    private fun readDocumentOrNull(file: File): MeshDocument? = try {
+        MeshDocument.decode(file.readText())
+    } catch (e: IOException) {
+        Notifications.send("Couldn't open ${file.name}: ${e.message}")
+        null
+    } catch (e: IllegalArgumentException) {
+        Notifications.send("Couldn't open ${file.name}: ${e.message}")
+        null
+    }
+
+    /** Writes through a temporary file, so a failed save leaves the previous file intact. */
+    private suspend fun writeDocument(document: MeshDocument, file: File) = withContext(Dispatchers.IO) {
+        val directory = file.absoluteFile.parentFile
+        directory.mkdirs()
+        val temporaryFile = File(directory, ".${file.name}.tmp")
+        temporaryFile.writeText(document.encode())
+        Files.move(
+            temporaryFile.toPath(),
+            file.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE,
+        )
+    }
 
     val uiState = MutableStateFlow(
         AppUiState(
@@ -240,45 +431,51 @@ class AppConfiguration(
         )
     )
 
-    /** Returns the new color's ID. */
-    suspend fun addColor(color: SavedColor): Long = repository.addColor(color)
-
-    fun deleteColor(color: SavedColor) {
-        repository.deleteColor(color)
+    /** Adds a custom color to the open document and returns its ID. Call on the UI thread. */
+    fun addColor(color: SavedColor): Long {
+        val id = nextCustomColorId.getAndIncrement()
+        recordEdit { customColors.update { it + color.copy(uid = id, preset = false) } }
+        return id
     }
 
-    fun updateCanvasWidthMode() {
-        meshState.update {
-            val current = it.canvasWidthMode
-            it.copy(
-                canvasWidthMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
-            )
+    /**
+     * Removes a custom color from the document. Points that used it become transparent, and the canvas
+     * background resets to the default if it used it. Undo brings the color back with them.
+     */
+    fun deleteColor(color: SavedColor) = recordEdit {
+        customColors.update { colors -> colors.filterNot { it.uid == color.uid } }
+        canvasBackgroundColor.update { if (it == color.uid) TRANSPARENT_COLOR_ID else it }
+        val updatedPoints = meshPoints.replaceColor(
+            colorId = color.uid,
+            replacementColorId = TRANSPARENT_COLOR_ID,
+        )
+        updatedPoints.forEachIndexed { index, row ->
+            meshPoints[index] = row
         }
-        requestSave()
     }
 
-    fun updateCanvasWidth(width: Int) {
-        meshState.update {
-            it.copy(canvasWidth = width)
-        }
-        requestSave()
+    fun updateCanvasWidthMode() = editMeshState {
+        it.copy(canvasWidthMode = if (it.canvasWidthMode == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed)
     }
 
-    fun updateCanvasHeightMode() {
-        meshState.update {
-            val current = it.canvasHeightMode
-            it.copy(
-                canvasHeightMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
-            )
-        }
-        requestSave()
+    fun updateCanvasWidth(width: Int) = editMeshState { it.copy(canvasWidth = width) }
+
+    fun updateCanvasHeightMode() = editMeshState {
+        it.copy(canvasHeightMode = if (it.canvasHeightMode == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed)
     }
 
-    fun updateCanvasHeight(height: Int) {
-        meshState.update {
-            it.copy(canvasHeight = height)
-        }
-        requestSave()
+    fun updateCanvasHeight(height: Int) = editMeshState { it.copy(canvasHeight = height) }
+
+    /** Records the size the canvas fills in the window. Not an edit: it follows the window. */
+    fun updateMeasuredCanvasSize(width: Int, height: Int) {
+        measuredCanvasSize = width to height
+        meshState.update { it.copy(canvasWidth = width, canvasHeight = height) }
+    }
+
+    /** Changes canvas settings that undo doesn't cover. */
+    private fun editMeshState(transform: (MeshState) -> MeshState) {
+        val before = meshState.getAndUpdate(transform)
+        if (meshState.value != before) markEdited()
     }
 
     fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
@@ -290,6 +487,7 @@ class AppConfiguration(
     }
 
     fun updateCanvasBackgroundColor(color: Long) = recordEdit {
+        if (meshPoints.isEmpty()) backgroundSetWhileLoading = true
         canvasBackgroundColor.update { color }
     }
 
@@ -301,13 +499,14 @@ class AppConfiguration(
         if (meshPoints.isEmpty()) {
             // Applied when the mesh finishes loading.
             resizedWhileLoading = true
+            editedWhileLoading = true
             meshState.update { it.copy(rows = rows, cols = cols) }
             return
         }
         recordEdit {
             meshState.update { it.copy(rows = rows, cols = cols) }
             if (rows != meshPoints.size || cols != meshPoints[0].size) {
-                val generatedPoints = generateMeshPointGrid(rows, cols, paletteIds.value)
+                val generatedPoints = generateMeshPointGrid(rows, cols, paletteIds())
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
             }
@@ -334,45 +533,12 @@ class AppConfiguration(
         meshPoints.addAll(newPoints)
     }
 
-    /** Waits for loading, then saves the current state and points. */
-    suspend fun saveMeshPoints() {
-        loadMeshPoints.await()
-
-        requestSave()
-        flushPendingSave()
-    }
-
-    /**
-     * Makes points that used a deleted palette color transparent, and resets the canvas background
-     * to the default if it used the color. Palette deletion is not undoable, so this rewrites history
-     * too rather than letting undo bring back the deleted ID.
-     */
-    fun removeColorFromMeshPoints(colorToRemove: Long) {
-        fun Long.withoutDeletedColor() = if (this == colorToRemove) -1L else this
-        history.replaceAll {
-            it.copy(
-                points = it.points.replaceColor(colorToRemove, replacementColorId = -1L),
-                canvasBackgroundColor = it.canvasBackgroundColor.withoutDeletedColor(),
-            )
-        }
-        canvasBackgroundColor.update { it.withoutDeletedColor() }
-        val updatedPoints = meshPoints.replaceColor(
-            colorId = colorToRemove,
-            replacementColorId = -1L,
-        )
-        updatedPoints.forEachIndexed { index, row ->
-            meshPoints[index] = row
-        }
-        requestSave()
-    }
-
     fun exportMeshPointsAsCode() {
         scope.launch {
-            loadMeshPoints.await()
-            val availableColorsAsList = availableColors.first { it.isNotEmpty() }
+            loadStartupDocument.await()
             // Read on the UI thread, which owns the mesh, so a grid being replaced can't be caught half-written.
-            val (colorPoints, blurLevel) = withContext(Dispatchers.Main) {
-                meshPoints.toList() to meshState.value.blurLevel
+            val (colorPoints, blurLevel, availableColorsAsList) = withContext(Dispatchers.Main) {
+                Triple(meshPoints.toList(), meshState.value.blurLevel, palette())
             }
             val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
@@ -459,18 +625,23 @@ class AppConfiguration(
         points = meshPoints.toList(),
         blurLevel = meshState.value.blurLevel,
         canvasBackgroundColor = canvasBackgroundColor.value,
+        customColors = customColors.value,
     )
 
     /** Runs [edit] and adds an undo step if it changed anything. */
     private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
-        // Before the saved mesh loads there is nothing to go back to.
-        if (meshPoints.isEmpty()) return edit()
+        // Before the document loads there is nothing to go back to.
+        if (meshPoints.isEmpty()) {
+            edit()
+            editedWhileLoading = true
+            return
+        }
 
         val before = snapshot()
         edit()
         if (snapshot() != before) {
             history.record(before, group)
-            requestSave()
+            markEdited()
         }
     }
 
@@ -479,9 +650,10 @@ class AppConfiguration(
             it.copy(rows = snapshot.points.size, cols = snapshot.points[0].size, blurLevel = snapshot.blurLevel)
         }
         canvasBackgroundColor.value = snapshot.canvasBackgroundColor
+        customColors.value = snapshot.customColors
         meshPoints.clear()
         meshPoints.addAll(snapshot.points)
-        requestSave()
+        markEdited()
     }
 
     fun toggleShowingPoints() {
