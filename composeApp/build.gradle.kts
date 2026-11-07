@@ -114,6 +114,8 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg)
+            // From suggestRuntimeModules. Without them the packaged app fails at launch (sun/misc/Unsafe).
+            modules("java.compiler", "java.instrument", "java.management", "jdk.unsupported")
 
             packageVersion = version.toString()
             packageName = baseName
