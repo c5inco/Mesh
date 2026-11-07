@@ -1,7 +1,7 @@
 [versions]
 androidx-lifecycle = "2.10.0"
-compose-multiplatform = "1.11.0" # Must stay on Jewel's supported Compose 1.11 line
-jewel = "0.39.1-262.9437.29"
+compose-multiplatform = "1.12.2" # Keep aligned with Jewel's supported Compose 1.12 line
+jewel = "0.42.0-263.7307.200"
 junit = "4.13.2"
 junit-jupiter = "5.11.4"
 junit-platform = "1.11.4"
@@ -10,6 +10,8 @@ kotlin = "2.3.21" # Jewel requires Kotlin 2.3.20 or newer
 ksp = "2.3.8" # KSP 2.3.x is independent of Kotlin patch version; latest as of Room 2.8.4
 kotlinx-coroutines = "1.11.0"
 kotlinpoet = "2.3.0"
+ktor = "3.5.2" # Matches the MCP Kotlin SDK
+mcp-kotlin-sdk = "0.16.0"
 kotlinx-serialization-json = "1.11.0"
 room = "2.8.4"
 sqlite = "2.6.2"
@@ -31,6 +33,10 @@ compose-components-resources = { group = "org.jetbrains.compose.components", nam
 jewel-int-ui-standalone = { group = "org.jetbrains.jewel", name = "jewel-int-ui-standalone", version.ref = "jewel" }
 kotlinx-coroutines-swing = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
 kotlinpoet = { group = "com.squareup", name = "kotlinpoet", version.ref = "kotlinpoet" }
+ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio", version.ref = "ktor" }
+ktor-client-cio = { group = "io.ktor", name = "ktor-client-cio", version.ref = "ktor" }
+mcp-kotlin-sdk-client = { group = "io.modelcontextprotocol", name = "kotlin-sdk-client", version.ref = "mcp-kotlin-sdk" }
+mcp-kotlin-sdk-server = { group = "io.modelcontextprotocol", name = "kotlin-sdk-server", version.ref = "mcp-kotlin-sdk" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization-json" }
 
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room"}

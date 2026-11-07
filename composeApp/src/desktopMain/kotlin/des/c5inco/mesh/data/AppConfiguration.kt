@@ -1,29 +1,42 @@
 package des.c5inco.mesh.data
 
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.MeshGradientPainter
+import androidx.compose.ui.graphics.TileMode
 import com.squareup.kotlinpoet.CodeBlock
-import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
+import com.squareup.kotlinpoet.FileSpec
+import com.squareup.kotlinpoet.MemberName
 import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
+import data.MeshState
 import des.c5inco.mesh.common.toHexStringNoHash
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import model.MeshPoint
 import model.SavedColor
 import model.distributedEvenly
 import model.findColor
@@ -37,6 +50,8 @@ import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
+import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.seconds
 
 data class AppUiState(
     val showPoints: Boolean = false,
@@ -64,6 +79,16 @@ private val defaultColorPoints = listOf(
     )
 )
 
+/**
+ * The parts of the document that undo and redo restore. The grid size comes from [points] rather
+ * than [MeshState], which changes before a regenerated grid arrives.
+ */
+private data class EditSnapshot(
+    val points: List<List<Pair<Offset, Long>>>,
+    val blurLevel: Float,
+    val canvasBackgroundColor: Long,
+)
+
 class AppConfiguration(
     private val repository: DataRepository,
     showPoints: Boolean = false,
@@ -73,6 +98,7 @@ class AppConfiguration(
 
     companion object {
         const val MAX_BLUR_LEVEL = 40
+        private val AUTOSAVE_DELAY = 1.seconds
 
         fun saveImage(image: BufferedImage, scale: Int) {
             try {
@@ -95,30 +121,117 @@ class AppConfiguration(
     val customColors = repository.getCustomColors()
     val availableColors = repository.getAllColors()
 
+    /** Palette IDs that new grid points take their colors from; non-empty once the mesh has loaded. */
+    private val paletteIds = availableColors
+        .map { colors -> colors.map(SavedColor::uid) }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
     var canvasBackgroundColor = MutableStateFlow(-1L)
 
-    var meshState = MutableStateFlow(repository.loadMeshState())
+    private val savedMeshState = repository.loadMeshState()
+    var meshState = MutableStateFlow(savedMeshState)
 
+    /**
+     * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
+     * background work such as loading hands its result to the UI thread.
+     */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
-    private val meshPointsMutex = Mutex()
 
-    private val loadMeshPoints = scope.async {
-        val initialMeshPoints = repository.getMeshPoints().first()
-        println("Loaded points: $initialMeshPoints")
-        val loadedPoints = if (initialMeshPoints.isEmpty()) {
-            defaultColorPoints
-        } else {
-            initialMeshPoints.toOffsetGrid()
-        }
+    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
+    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
 
-        meshPointsMutex.withLock {
-            meshPoints.clear()
-            meshPoints.addAll(loadedPoints)
+    /** The state and points to persist, captured together on the UI thread after each change. */
+    private class PendingSave(val meshState: MeshState, val points: List<MeshPoint>)
+
+    @Volatile
+    private var latestSave: PendingSave? = null
+    private var lastWrittenSave: PendingSave? = null // Guarded by saveMutex.
+    private val saveMutex = Mutex()
+    /** Buffered so no request is lost before collection starts. */
+    private val saveRequests = Channel<Unit>(Channel.CONFLATED)
+
+    init {
+        // Save soon after edits stop, so a crash loses at most the last moment of work.
+        scope.launch {
+            @OptIn(FlowPreview::class)
+            saveRequests.receiveAsFlow().debounce(AUTOSAVE_DELAY).collect {
+                try {
+                    flushPendingSave()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    println("Autosave failed, retrying: ${e.message}")
+                    delay(AUTOSAVE_DELAY)
+                    saveRequests.trySend(Unit)
+                }
+            }
         }
     }
 
-    @Volatile
-    private var generateMeshPointsJob: Deferred<Unit>? = null
+    /** Captures the current state for autosave. Call on the UI thread after a change. */
+    private fun requestSave() {
+        val points = meshPoints.toList()
+        if (points.isEmpty()) return
+        latestSave = PendingSave(meshState.value, points.toSavedMeshPoints())
+        saveRequests.trySend(Unit)
+    }
+
+    /**
+     * Writes the latest captured state, if any. Safe from any thread, including a shutdown hook:
+     * it never waits on the UI thread, and writes never interleave.
+     */
+    suspend fun flushPendingSave() = saveMutex.withLock {
+        // Keep going until nothing newer was captured during a write.
+        while (true) {
+            val save = latestSave
+            if (save == null || save === lastWrittenSave) return@withLock
+            repository.saveMeshState(save.meshState)
+            repository.saveMeshPoints(save.points)
+            lastWrittenSave = save
+        }
+    }
+
+    private val history = EditHistory<EditSnapshot>()
+    val canUndo = history.canUndo
+    val canRedo = history.canRedo
+
+    private var resizedWhileLoading = false
+
+    // Declared after the fields it touches, which it may reach before the constructor finishes.
+    private val loadMeshPoints = scope.async {
+        val initialMeshPoints = repository.getMeshPoints().first()
+        println("Loaded points: $initialMeshPoints")
+        // Resizes need the palette, so the mesh counts as loaded only once it has arrived.
+        val colorIds = paletteIds.first { it.isNotEmpty() }
+        val savedRows = savedMeshState.rows.coerceIn(2, 10)
+        val savedCols = savedMeshState.cols.coerceIn(2, 10)
+        val loadedPoints = when {
+            initialMeshPoints.isNotEmpty() -> initialMeshPoints.toOffsetGrid()
+            savedRows == defaultColorPoints.size && savedCols == defaultColorPoints[0].size -> defaultColorPoints
+            // No saved points but a saved size, as after a crash before the first points were written.
+            else -> generateMeshPointGrid(savedRows, savedCols, colorIds)
+        }
+
+        withContext(Dispatchers.Main) {
+            meshPoints.clear()
+            meshPoints.addAll(loadedPoints)
+            // Apply a resize requested while loading, as an undo step back to the loaded grid.
+            if (resizedWhileLoading) {
+                val (rows, cols) = meshState.value.let { it.rows to it.cols }
+                if (rows != loadedPoints.size || cols != loadedPoints[0].size) {
+                    val before = snapshot()
+                    meshPoints.clear()
+                    meshPoints.addAll(generateMeshPointGrid(rows, cols, colorIds))
+                    history.record(before, group = null)
+                }
+            }
+            // The state file and the points table are written separately, so a crash between the two
+            // can leave a grid size that doesn't match the points; the points win.
+            meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
+            // Save a grid created here rather than loaded, edits made while loading, and any size repaired above.
+            if (initialMeshPoints.isEmpty() || resizedWhileLoading || meshState.value != savedMeshState) requestSave()
+        }
+    }
+
 
     val uiState = MutableStateFlow(
         AppUiState(
@@ -127,9 +240,8 @@ class AppConfiguration(
         )
     )
 
-    fun addColor(color: SavedColor) {
-        repository.addColor(color)
-    }
+    /** Returns the new color's ID. */
+    suspend fun addColor(color: SavedColor): Long = repository.addColor(color)
 
     fun deleteColor(color: SavedColor) {
         repository.deleteColor(color)
@@ -142,12 +254,14 @@ class AppConfiguration(
                 canvasWidthMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasWidth(width: Int) {
         meshState.update {
             it.copy(canvasWidth = width)
         }
+        requestSave()
     }
 
     fun updateCanvasHeightMode() {
@@ -157,15 +271,17 @@ class AppConfiguration(
                 canvasHeightMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasHeight(height: Int) {
         meshState.update {
             it.copy(canvasHeight = height)
         }
+        requestSave()
     }
 
-    fun updateBlurLevel(level: Float) {
+    fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
         meshState.update {
             it.copy(
                 blurLevel = level
@@ -173,49 +289,32 @@ class AppConfiguration(
         }
     }
 
-    fun updateCanvasBackgroundColor(color: Long) {
+    fun updateCanvasBackgroundColor(color: Long) = recordEdit {
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) {
-        meshState.update {
-            it.copy(rows = rows.coerceIn(2, 10))
+    fun updateTotalRows(rows: Int) = resize(rows = rows.coerceIn(2, 10), cols = meshState.value.cols)
+
+    fun updateTotalCols(cols: Int) = resize(rows = meshState.value.rows, cols = cols.coerceIn(2, 10))
+
+    private fun resize(rows: Int, cols: Int) {
+        if (meshPoints.isEmpty()) {
+            // Applied when the mesh finishes loading.
+            resizedWhileLoading = true
+            meshState.update { it.copy(rows = rows, cols = cols) }
+            return
         }
-        generateMeshPoints()
-    }
-
-    fun updateTotalCols(cols: Int) {
-        meshState.update {
-            it.copy(cols = cols.coerceIn(2, 10))
-        }
-        generateMeshPoints()
-    }
-
-    fun saveMeshState() {
-        repository.saveMeshState(meshState.value)
-    }
-
-    private fun generateMeshPoints() {
-        val requestedMeshState = meshState.value
-        val previousJob = generateMeshPointsJob
-        generateMeshPointsJob = scope.async {
-            loadMeshPoints.await()
-            val allColors = availableColors.first { it.isNotEmpty() }
-            val generatedPoints = generateMeshPointGrid(
-                rows = requestedMeshState.rows,
-                cols = requestedMeshState.cols,
-                colorIds = allColors.map(SavedColor::uid),
-            )
-
-            meshPointsMutex.withLock {
+        recordEdit {
+            meshState.update { it.copy(rows = rows, cols = cols) }
+            if (rows != meshPoints.size || cols != meshPoints[0].size) {
+                val generatedPoints = generateMeshPointGrid(rows, cols, paletteIds.value)
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
             }
         }
-        previousJob?.cancel()
     }
 
-    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) {
+    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) = recordEdit(group = "point $row,$col") {
         val updatedPoints = meshPoints.withUpdatedMeshPoint(
             row = row,
             col = col,
@@ -225,7 +324,7 @@ class AppConfiguration(
         meshPoints[row] = updatedPoints[row]
     }
 
-    fun distributeMeshPointsEvenly() {
+    fun distributeMeshPointsEvenly() = recordEdit {
         val currentMeshState = meshState.value
         val newPoints = meshPoints.distributedEvenly(
             rows = currentMeshState.rows,
@@ -235,29 +334,28 @@ class AppConfiguration(
         meshPoints.addAll(newPoints)
     }
 
+    /** Waits for loading, then saves the current state and points. */
     suspend fun saveMeshPoints() {
         loadMeshPoints.await()
 
-        while (true) {
-            val pendingGeneration = generateMeshPointsJob
-            try {
-                pendingGeneration?.await()
-            } catch (error: CancellationException) {
-                currentCoroutineContext().ensureActive()
-                if (pendingGeneration === generateMeshPointsJob) throw error
-                continue
-            }
-            if (pendingGeneration === generateMeshPointsJob) break
-        }
-
-        meshPointsMutex.withLock {
-            val points = meshPoints.toSavedMeshPoints()
-            println("Saved: $points")
-            repository.saveMeshPoints(points)
-        }
+        requestSave()
+        flushPendingSave()
     }
 
+    /**
+     * Makes points that used a deleted palette color transparent, and resets the canvas background
+     * to the default if it used the color. Palette deletion is not undoable, so this rewrites history
+     * too rather than letting undo bring back the deleted ID.
+     */
     fun removeColorFromMeshPoints(colorToRemove: Long) {
+        fun Long.withoutDeletedColor() = if (this == colorToRemove) -1L else this
+        history.replaceAll {
+            it.copy(
+                points = it.points.replaceColor(colorToRemove, replacementColorId = -1L),
+                canvasBackgroundColor = it.canvasBackgroundColor.withoutDeletedColor(),
+            )
+        }
+        canvasBackgroundColor.update { it.withoutDeletedColor() }
         val updatedPoints = meshPoints.replaceColor(
             colorId = colorToRemove,
             replacementColorId = -1L,
@@ -265,52 +363,125 @@ class AppConfiguration(
         updatedPoints.forEachIndexed { index, row ->
             meshPoints[index] = row
         }
+        requestSave()
     }
 
     fun exportMeshPointsAsCode() {
         scope.launch {
-            val availableColorsAsList = availableColors.first()
+            loadMeshPoints.await()
+            val availableColorsAsList = availableColors.first { it.isNotEmpty() }
+            // Read on the UI thread, which owns the mesh, so a grid being replaced can't be caught half-written.
+            val (colorPoints, blurLevel) = withContext(Dispatchers.Main) {
+                meshPoints.toList() to meshState.value.blurLevel
+            }
+            val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
-            val offsetType = Offset::class.asClassName()
-            val colorType = Color::class.asClassName()
-            val pairType = Pair::class.asClassName().parameterizedBy(offsetType, colorType)
-            val innerListType = List::class.asClassName().parameterizedBy(pairType)
-            val outerListType = List::class.asClassName().parameterizedBy(innerListType)
-
-            val listInitializer = CodeBlock.builder()
-                .add("listOf(\n")
+            val painterType = MeshGradientPainter::class.asClassName()
+            val initializer = CodeBlock.builder()
+                .add(
+                    "%T(rows = %L, columns = %L, hasBicubicColor = true) {\n",
+                    painterType,
+                    colorPoints.lastIndex,
+                    colorPoints.first().lastIndex,
+                )
                 .indent()
 
-            meshPoints.forEachIndexed { _, innerList ->
-                listInitializer.add("listOf(\n")
-                listInitializer.indent()
-
-                innerList.forEachIndexed { _, pair ->
+            colorPoints.forEachIndexed { row, points ->
+                points.forEachIndexed { column, pair ->
                     val hexString = availableColorsAsList.findColor(pair.second)
                         .toHexStringNoHash(includeAlpha = true)
-                    listInitializer.add(
-                        "Offset(%Lf, %Lf) to Color(0x%L),\n",
+                    initializer.add(
+                        "setVertex(%L, %L, %T(%Lf, %Lf), %T(0x%L))\n",
+                        row,
+                        column,
+                        Offset::class,
                         pair.first.x,
                         pair.first.y,
-                        hexString
+                        Color::class,
+                        hexString,
                     )
                 }
-
-                listInitializer.unindent()
-                listInitializer.add("),\n")
             }
 
-            listInitializer.unindent()
-            listInitializer.add(")")
+            initializer.unindent()
+            initializer.add("}")
 
-            val codeSpec = PropertySpec.builder("colorPoints", outerListType)
-                .initializer(listInitializer.build())
+            val codeSpec = PropertySpec.builder("meshGradient", painterType)
+                .initializer(initializer.build())
                 .build()
 
+            val modifierInitializer = CodeBlock.builder()
+                .add("%T", Modifier::class)
+            if (blurRadius > 0f) {
+                modifierInitializer
+                    .add("\n")
+                    .indent()
+                    .beginControlFlow(".%M", MemberName("androidx.compose.ui.graphics", "graphicsLayer"))
+                    .addStatement(
+                        "renderEffect = %T(%Lf, %Lf, %T.Clamp)",
+                        BlurEffect::class,
+                        blurRadius,
+                        blurRadius,
+                        TileMode::class,
+                    )
+                    .endControlFlow()
+                    .unindent()
+            }
+            modifierInitializer.indent()
+                .add(".%M(meshGradient, sizeToIntrinsics = false)", MemberName("androidx.compose.ui.draw", "paint"))
+                .unindent()
+
+            val code = FileSpec.builder("", "MeshGradient")
+                .addProperty(codeSpec)
+                .addProperty(
+                    PropertySpec.builder("meshGradientModifier", Modifier::class)
+                        .initializer(modifierInitializer.build())
+                        .build(),
+                )
+                .build()
+                .toString()
+
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-            clipboard.setContents(StringSelection(codeSpec.toString()), null)
-            println(codeSpec.toString())
+            clipboard.setContents(StringSelection(code), null)
+            println(code)
         }
+    }
+
+    fun undo() {
+        history.undo(snapshot())?.let(::restore)
+    }
+
+    fun redo() {
+        history.redo(snapshot())?.let(::restore)
+    }
+
+    private fun snapshot() = EditSnapshot(
+        points = meshPoints.toList(),
+        blurLevel = meshState.value.blurLevel,
+        canvasBackgroundColor = canvasBackgroundColor.value,
+    )
+
+    /** Runs [edit] and adds an undo step if it changed anything. */
+    private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
+        // Before the saved mesh loads there is nothing to go back to.
+        if (meshPoints.isEmpty()) return edit()
+
+        val before = snapshot()
+        edit()
+        if (snapshot() != before) {
+            history.record(before, group)
+            requestSave()
+        }
+    }
+
+    private fun restore(snapshot: EditSnapshot) {
+        meshState.update {
+            it.copy(rows = snapshot.points.size, cols = snapshot.points[0].size, blurLevel = snapshot.blurLevel)
+        }
+        canvasBackgroundColor.value = snapshot.canvasBackgroundColor
+        meshPoints.clear()
+        meshPoints.addAll(snapshot.points)
+        requestSave()
     }
 
     fun toggleShowingPoints() {

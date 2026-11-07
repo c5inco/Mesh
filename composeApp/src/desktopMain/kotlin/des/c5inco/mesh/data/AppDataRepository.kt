@@ -43,10 +43,8 @@ class AppDataRepository : DataRepository {
         return database.savedColorDao().getAllCustom()
     }
 
-    override fun addColor(color: SavedColor) {
-        scope.launch {
-            database.savedColorDao().insertAll(color)
-        }
+    override suspend fun addColor(color: SavedColor): Long {
+        return database.savedColorDao().insert(color)
     }
 
     override fun deleteColor(color: SavedColor) {
@@ -68,7 +66,6 @@ class AppDataRepository : DataRepository {
     }
 
     override suspend fun saveMeshPoints(points: List<MeshPoint>) {
-        database.meshPointDao().deleteAll()
-        database.meshPointDao().insertAll(*points.toTypedArray())
+        database.meshPointDao().replaceAll(points)
     }
 }

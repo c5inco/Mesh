@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.Notifications
+import des.c5inco.mesh.mcp.McpServerController
 import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.ui.GradientCanvas
 import des.c5inco.mesh.ui.SidePanel
@@ -26,6 +27,7 @@ import model.SavedColor
 @Composable
 fun App(
     configuration: AppConfiguration,
+    mcpServer: McpServerController? = null,
 ) {
     val presetColors by configuration.presetColors.collectAsState(initial = emptyList())
     val customColors by configuration.customColors.collectAsState(initial = emptyList())
@@ -33,6 +35,7 @@ fun App(
     val canvasBackgroundColor by configuration.canvasBackgroundColor.collectAsState()
     val uiState by configuration.uiState.collectAsState()
     val meshState by configuration.meshState.collectAsState()
+    val mcpServerState = mcpServer?.state?.collectAsState()?.value
 
     Row(
         Modifier
@@ -47,7 +50,6 @@ fun App(
         GradientCanvas(
             exportGraphicsLayer = exportGraphicsLayer,
             exportScale = exportScale,
-            resolution = meshState.resolution,
             canvasWidthMode = meshState.canvasWidthMode,
             canvasWidth = meshState.canvasWidth,
             canvasHeightMode = meshState.canvasHeightMode,
@@ -113,20 +115,25 @@ fun App(
             },
             onCanvasBackgroundColorChange = configuration::updateCanvasBackgroundColor,
             onAddColor = {
-                configuration.addColor(
-                    SavedColor(
-                        red = (255 * it.red).toInt(),
-                        green = (255 * it.green).toInt(),
-                        blue = (255 * it.blue).toInt(),
-                        alpha = it.alpha
+                coroutineScope.launch {
+                    configuration.addColor(
+                        SavedColor(
+                            red = (255 * it.red).toInt(),
+                            green = (255 * it.green).toInt(),
+                            blue = (255 * it.blue).toInt(),
+                            alpha = it.alpha
+                        )
                     )
-                )
+                }
             },
             onRemoveColor = {
                 configuration.removeColorFromMeshPoints(it.uid)
                 configuration.deleteColor(it)
             },
             selectedColorPoint = selectedColorPoint,
+            mcpServerState = mcpServerState,
+            onMcpServerEnabledChange = { mcpServer?.setEnabled(it) },
+            onMcpServerPortChange = { mcpServer?.setPort(it) },
             modifier = Modifier.width(280.dp)
         )
     }

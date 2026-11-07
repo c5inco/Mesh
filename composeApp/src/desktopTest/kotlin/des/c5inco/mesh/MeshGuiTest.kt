@@ -4,6 +4,7 @@ import des.c5inco.mesh.testing.MeshAppFixture
 import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.testing.addCustomColor
 import des.c5inco.mesh.testing.assertColorSelectedInOpenDropdown
+import des.c5inco.mesh.testing.eventually
 import des.c5inco.mesh.testing.openPointColorDropdown
 import des.c5inco.mesh.testing.selectColorInOpenDropdown
 import des.c5inco.mesh.testing.waitForClipboardText
@@ -14,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeAll
@@ -83,7 +85,7 @@ class MeshGuiTest {
 
     @Test
     @Order(4)
-    fun `export code copies mesh points to the clipboard`(): Unit = runBlocking {
+    fun `export code copies an official mesh gradient painter to the clipboard`(): Unit = runBlocking {
         with(fixture.automator) {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
@@ -94,17 +96,28 @@ class MeshGuiTest {
             waitForText("📋 Points copied to the clipboard!")
 
             val clipboardText = waitForClipboardText("exported mesh code") { text ->
-                text.contains("val colorPoints") && text.contains("Offset(")
+                text.contains("val meshGradient") && text.contains("setVertex(")
             }
 
             assertTrue(
-                clipboardText.contains("Offset(0.0f, 0.0f) to Color(0xFF7766EE)"),
+                clipboardText.contains("MeshGradientPainter(rows = 2, columns = 3, hasBicubicColor = true)"),
+                "Painter dimensions count patches, not vertices",
+            )
+            assertTrue(
+                clipboardText.contains(
+                    "setVertex(0, 0, Offset(0.0f, 0.0f), Color(0xFF7766EE))",
+                ),
                 "Clipboard should contain the first mesh point",
             )
             assertTrue(
-                clipboardText.contains("Offset(0.0f, 1.0f) to Color(0xFF429BED)"),
+                clipboardText.contains(
+                    "setVertex(2, 0, Offset(0.0f, 1.0f), Color(0xFF429BED))",
+                ),
                 "Clipboard should contain the last row mesh point",
             )
+            assertTrue(clipboardText.contains("val meshGradientModifier"))
+            assertTrue(clipboardText.contains(".paint(meshGradient, sizeToIntrinsics = false)"))
+            assertFalse(clipboardText.contains("BlurEffect"), "The default mesh has no blur")
         }
     }
 
@@ -155,6 +168,32 @@ class MeshGuiTest {
 
             openPointColorDropdown(row = 0, col = 0)
             assertColorSelectedInOpenDropdown("00FF00")
+        }
+    }
+
+    @Test
+    @Order(8)
+    fun `deleting a custom color asks for confirmation first`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            waitForVisualIdle()
+
+            addCustomColor("0000FF")
+            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            waitForVisualIdle()
+            waitForText("Delete #0000FF?")
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CANCEL))
+            waitForVisualIdle()
+            assertNull(findOneByText("Delete #0000FF?"), "Cancel should close the confirmation")
+            assertNotNull(findOneByTestTag(MeshTestTags.customColor("0000FF")), "Cancel should keep the color")
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            waitForVisualIdle()
+            performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CONFIRM))
+            eventually(description = "custom color 0000FF to be deleted") {
+                if (findOneByTestTag(MeshTestTags.customColor("0000FF")) == null) Unit else null
+            }
         }
     }
 }
