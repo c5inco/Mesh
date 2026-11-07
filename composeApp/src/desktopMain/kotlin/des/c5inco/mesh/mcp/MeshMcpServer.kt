@@ -161,10 +161,12 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         }
 
         val (current, currentColorId) = points[row][col]
-        val colorId = args.long("colorId") ?: currentColorId
-        if (configuration.availableColors.first().none { it.uid == colorId }) {
-            return@withContext error("No color with ID $colorId; call get_mesh for color IDs or add_color to create one")
+        // Only a new color must be in the palette; a point whose color was deleted keeps its transparent ID.
+        val requestedColorId = args.long("colorId")
+        if (requestedColorId != null && configuration.availableColors.first().none { it.uid == requestedColorId }) {
+            return@withContext error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
         }
+        val colorId = requestedColorId ?: currentColorId
         val x = args.float("x") ?: current.x
         val y = args.float("y") ?: current.y
         if (x !in 0f..1f || y !in 0f..1f) return@withContext error("x and y must be between 0 and 1")
@@ -190,14 +192,10 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             alpha = color.alpha,
         )
 
-        // The repository inserts asynchronously, so wait for the new row to learn its ID.
-        val existingIds = configuration.availableColors.first().map { it.uid }.toSet()
-        configuration.addColor(savedColor)
-        val added = withTimeout(5_000) {
-            configuration.availableColors.first { colors -> colors.any { it.uid !in existingIds } }
-                .first { it.uid !in existingIds }
-        }
-        return CallToolResult(content = listOf(TextContent("Added $hex as color ID ${added.uid}")))
+        val colorId = configuration.addColor(savedColor)
+        // Wait until the palette lists the color, so update_point accepts its ID right away.
+        withTimeout(5_000) { configuration.availableColors.first { colors -> colors.any { it.uid == colorId } } }
+        return CallToolResult(content = listOf(TextContent("Added $hex as color ID $colorId")))
     }
 
     private suspend fun renderPng(request: CallToolRequest): CallToolResult {

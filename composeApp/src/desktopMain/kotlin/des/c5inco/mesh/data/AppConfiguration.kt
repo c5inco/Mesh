@@ -127,9 +127,8 @@ class AppConfiguration(
         )
     )
 
-    fun addColor(color: SavedColor) {
-        repository.addColor(color)
-    }
+    /** Returns the new color's ID. */
+    suspend fun addColor(color: SavedColor): Long = repository.addColor(color)
 
     fun deleteColor(color: SavedColor) {
         repository.deleteColor(color)

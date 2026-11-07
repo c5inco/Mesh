@@ -11,8 +11,10 @@ import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.ImageContent
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.float
@@ -83,6 +85,15 @@ class MeshMcpServerTest {
 
         assertEquals(true, result.isError)
         assertEquals(0.33f to 2L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+    }
+
+    @Test
+    fun `update_point moves a point whose color was deleted without recoloring it`() = runBlocking {
+        withContext(Dispatchers.Main) { configuration.removeColorFromMeshPoints(2L) }
+
+        callOk("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.4))
+
+        assertEquals(0.4f to -1L, configuration.meshPoints[1][1].let { it.first.x to it.second })
     }
 
     @Test
