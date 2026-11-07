@@ -208,19 +208,21 @@ class AppConfiguration(
         withContext(Dispatchers.Main) {
             meshPoints.clear()
             meshPoints.addAll(loadedPoints)
-            // Apply a resize requested while loading.
+            // Apply a resize requested while loading, as an undo step back to the loaded grid.
             if (resizedWhileLoading) {
                 val (rows, cols) = meshState.value.let { it.rows to it.cols }
                 if (rows != loadedPoints.size || cols != loadedPoints[0].size) {
+                    val before = snapshot()
                     meshPoints.clear()
                     meshPoints.addAll(generateMeshPointGrid(rows, cols, colorIds))
+                    history.record(before, group = null)
                 }
             }
             // The state file and the points table are written separately, so a crash between the two
             // can leave a grid size that doesn't match the points; the points win.
             meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
-            // Save edits made while loading, and any size repaired above.
-            if (meshState.value != savedMeshState) requestSave()
+            // Save a grid created here rather than loaded, edits made while loading, and any size repaired above.
+            if (initialMeshPoints.isEmpty() || meshState.value != savedMeshState) requestSave()
         }
     }
 
