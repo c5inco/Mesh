@@ -392,9 +392,11 @@ class AppConfiguration(
         scope.launch {
             loadMeshPoints.await()
             val availableColorsAsList = availableColors.first { it.isNotEmpty() }
-            // toList() takes an immutable copy, so a concurrent UI edit can't change it mid-export.
-            val colorPoints = meshPoints.toList()
-            val blurRadius = (meshState.value.blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
+            // Read on the UI thread, which owns the mesh, so a grid being replaced can't be caught half-written.
+            val (colorPoints, blurLevel) = withContext(Dispatchers.Main) {
+                meshPoints.toList() to meshState.value.blurLevel
+            }
+            val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
             val painterType = MeshGradientPainter::class.asClassName()
             val initializer = CodeBlock.builder()
