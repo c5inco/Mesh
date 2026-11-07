@@ -19,7 +19,8 @@ interface DataRepository {
     fun getAllColors(): Flow<List<SavedColor>>
     fun getPresetColors(): Flow<List<SavedColor>>
     fun getCustomColors(): Flow<List<SavedColor>>
-    fun addColor(color: SavedColor)
+    /** Returns the new color's ID. */
+    suspend fun addColor(color: SavedColor): Long
     fun deleteColor(color: SavedColor)
     fun loadMeshState(): MeshState
     fun saveMeshState(state: MeshState)
