@@ -17,8 +17,15 @@ For a Developer ID release, the build must satisfy two independent checks:
 2. The DMG is submitted to Apple's notary service with a local `notarytool`
    keychain profile and stapled after acceptance.
 
-Compose Desktop 1.10 models `notarytool --keychain-profile` directly, so Mesh
-uses the same packaging, signing, notarization, and stapling flow as Compose Pi.
+Compose Desktop signs the app, its bundled runtime, and the native libraries
+inside its jars with the hardened runtime, a secure timestamp, and the JVM
+entitlements it needs (`allow-jit`, `allow-unsigned-executable-memory`, and
+`disable-library-validation`). The DMG container itself is not signed; Apple's
+notarization ticket is stapled to it instead.
+
+Compose Desktop's own notarization task only accepts Apple ID credentials, so
+Mesh replaces its action with a `notarytool --keychain-profile` flow that keeps
+credentials in the Keychain, matching Compose Pi.
 
 ## One-Time Machine Setup
 
@@ -54,8 +61,15 @@ xcrun notarytool store-credentials apple-notary \
 Do not pass `--password` to this command. When the option is omitted,
 `notarytool` prompts securely for the app-specific password and stores the
 credential in the developer's local Keychain. The profile itself is local to
-each machine. The helper defaults to `apple-notary`, but developers can use a
+each machine. The examples use `apple-notary`, but developers can use a
 different local profile name if they configure it as described below.
+
+On a machine without an interactive Apple ID login, such as a CI runner, a
+profile can store an App Store Connect API key instead:
+`xcrun notarytool store-credentials apple-notary --key AuthKey_<KEYID>.p8
+--key-id <KEYID> --issuer <ISSUER-ID> --keychain <path>`. Delete the `.p8`
+file afterwards and set `compose.desktop.mac.notarization.keychainPath` to that
+keychain.
 
 ## Local Gradle Properties
 
@@ -106,37 +120,42 @@ The signed and notarized DMG is written under:
 composeApp/build/compose/binaries/main/dmg/
 ```
 
-`notarizeDmg` runs `packageDmg` first, submits the DMG with the configured
-`--keychain-profile`, waits for Apple's response, and staples the ticket when
-notarization succeeds.
+`notarizeDmg` refuses to start unless signing, the signing identity, and the
+keychain profile are configured. It then runs `packageDmg`, submits the DMG
+with the configured `--keychain-profile`, and waits for Apple's response. The
+task fails, printing Apple's notary log, unless the submission status is
+`Accepted`. After acceptance it staples the ticket and verifies the result:
+
+1. `xcrun stapler validate` on the DMG.
+2. `codesign --verify --deep --strict` on the `Mesh.app` inside the mounted DMG.
+3. `spctl --assess --type execute` on that app, which must report
+   `source=Notarized Developer ID`.
+
+The task fails if any check fails, so a successful `notarizeDmg` means the DMG
+was accepted, stapled, and passed Gatekeeper on the release machine.
 
 The equivalent manual commands are:
 
 ```bash
+DMG=composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
 ./gradlew :composeApp:packageDmg
-xcrun notarytool submit composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg \
+xcrun notarytool submit "$DMG" \
   --keychain-profile apple-notary \
   --wait \
   --timeout 30m
-xcrun stapler staple composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
-xcrun stapler validate composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
-spctl --assess --type open --context context:primary-signature --verbose \
-  composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
-```
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
 
-If DMG container assessment reports `source=no usable signature`, validate the
-mounted app payload instead:
-
-```bash
+# The DMG shows a license agreement, so accept it on stdin when mounting.
 mkdir -p /tmp/mesh-dmg-mount
-hdiutil attach composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg \
-  -readonly \
-  -nobrowse \
-  -mountpoint /tmp/mesh-dmg-mount
-spctl --assess --type execute --verbose /tmp/mesh-dmg-mount/Mesh.app
+echo Y | hdiutil attach "$DMG" -readonly -nobrowse -mountpoint /tmp/mesh-dmg-mount
 codesign --verify --deep --strict --verbose=2 /tmp/mesh-dmg-mount/Mesh.app
+spctl --assess --type execute --verbose=4 /tmp/mesh-dmg-mount/Mesh.app
 hdiutil detach /tmp/mesh-dmg-mount
 ```
+
+Check `notarytool submit` output for `status: Accepted`; do not rely on its
+exit code alone.
 
 If Apple's notary queue leaves a submission in progress, keep the submission id
 and query it later with the same profile name used for submission:
@@ -154,14 +173,29 @@ copy named `mesh-<version>-mac-<arch>.dmg`:
 ./gradlew :composeApp:renameDmg
 ```
 
-Run this after `packageDmg` or `notarizeDmg` if you want the renamed copy of the
-stapled DMG.
+To rename the notarized DMG, run both tasks in the same build:
+
+```bash
+./gradlew :composeApp:notarizeDmg :composeApp:renameDmg
+```
+
+`renameDmg` always runs after notarization in that build, so the copy is the
+stapled DMG. Stapling changes `packageDmg`'s output, so a later build that runs
+`packageDmg` (including `renameDmg` on its own) repackages an unstapled DMG over
+it. Copy the notarized DMG out of `build/` before running other packaging tasks.
 
 ## Failure Modes
 
 If `notarytool` reports that the configured profile is missing, create the local
 profile with `xcrun notarytool store-credentials` as shown above, or set
 `compose.desktop.mac.notarization.keychainProfile` to the correct profile name.
+
+If notarization returns `Invalid`, the task prints Apple's log with the
+rejected files. Fix the signing problem and rerun `notarizeDmg`; do not
+distribute the DMG.
+
+If `hdiutil attach` reports `Resource busy`, eject any mounted copy of the DMG
+and rerun the task.
 
 If `codesign` cannot find the identity, confirm the Developer ID certificate and
 private key are installed on the release machine:

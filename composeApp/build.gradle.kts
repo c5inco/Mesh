@@ -8,6 +8,8 @@ import org.gradle.kotlin.dsl.support.serviceOf
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import org.jetbrains.compose.desktop.application.tasks.AbstractNotarizationTask
+import groovy.json.JsonSlurper
+import java.io.ByteArrayOutputStream
 import java.util.Properties
 import kotlin.io.path.listDirectoryEntries
 
@@ -94,6 +96,8 @@ fun releaseProperty(name: String): String? =
     localReleaseProperty(name)
         ?: providers.gradleProperty(name).orNull?.trim()?.takeIf { value -> value.isNotEmpty() }
 
+val macSign = releaseProperty("compose.desktop.mac.sign")?.toBooleanStrictOrNull()
+val macSigningIdentity = releaseProperty("compose.desktop.mac.signing.identity")
 val macNotarizationKeychainProfile = releaseProperty("compose.desktop.mac.notarization.keychainProfile")
 val macNotarizationKeychainPath = releaseProperty("compose.desktop.mac.notarization.keychainPath")
 
@@ -130,21 +134,38 @@ compose.desktop {
                 appCategory = "public.app-category.graphics-design"
 
                 signing {
-                    releaseProperty("compose.desktop.mac.sign")?.toBooleanStrictOrNull()?.let {
-                        sign.set(it)
-                    }
-                    releaseProperty("compose.desktop.mac.signing.identity")?.let {
-                        identity.set(it)
-                    }
+                    macSign?.let { sign.set(it) }
+                    macSigningIdentity?.let { identity.set(it) }
                 }
             }
         }
     }
 }
 
+// Fail before packaging: an unsigned or ad hoc signed DMG can never pass notarization.
+gradle.taskGraph.whenReady {
+    val notarizationTasks = allTasks.filterIsInstance<AbstractNotarizationTask>()
+    if (notarizationTasks.isEmpty()) return@whenReady
+    val taskNames = notarizationTasks.joinToString { it.name }
+    require(macSign == true && macSigningIdentity != null) {
+        """
+        $taskNames requires a Developer ID signed app.
+        Set compose.desktop.mac.sign=true and compose.desktop.mac.signing.identity in ~/.gradle/gradle.properties or local.properties.
+        See docs/RELEASING.md.
+        """.trimIndent()
+    }
+    require(macNotarizationKeychainProfile != null) {
+        """
+        Missing notarytool keychain profile for $taskNames.
+        Set compose.desktop.mac.notarization.keychainProfile in local.properties or ~/.gradle/gradle.properties.
+        See docs/RELEASING.md.
+        """.trimIndent()
+    }
+}
+
 tasks.withType<AbstractNotarizationTask>().configureEach {
     group = "compose desktop"
-    description = "Notarize the packaged DMG with a local notarytool keychain profile."
+    description = "Notarize, staple, and verify the packaged DMG with a local notarytool keychain profile."
 
     val execOperations = serviceOf<ExecOperations>()
     val packageTaskName = when (name) {
@@ -155,39 +176,72 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
     dependsOn(packageTaskName)
     actions.clear()
 
-    doFirst {
-        require(!macNotarizationKeychainProfile.isNullOrEmpty()) {
-            """
-            Missing notarytool keychain profile for $name.
-            Set compose.desktop.mac.notarization.keychainProfile in local.properties or ~/.gradle/gradle.properties.
-            See docs/RELEASING.md.
-            """.trimIndent()
-        }
-    }
-
     doLast {
         val dmg = tasks.named<AbstractJPackageTask>(packageTaskName).get().packagedDmg()
-        val submitCommand = mutableListOf(
-            "xcrun",
-            "notarytool",
-            "submit",
-            dmg.absolutePath,
-            "--keychain-profile",
-            macNotarizationKeychainProfile!!,
-            "--wait",
-            "--timeout",
-            "30m",
-        )
-        macNotarizationKeychainPath?.let { keychainPath ->
-            submitCommand += listOf("--keychain", keychainPath)
+        val credentials = listOf("--keychain-profile", macNotarizationKeychainProfile!!) +
+            macNotarizationKeychainPath?.let { listOf("--keychain", it) }.orEmpty()
+
+        fun run(vararg command: String, ignoreExitValue: Boolean = false): String {
+            val output = ByteArrayOutputStream()
+            val result = execOperations.exec {
+                commandLine(*command)
+                standardOutput = output
+                errorOutput = output
+                isIgnoreExitValue = true
+            }
+            val text = output.toString()
+            logger.lifecycle(text.trimEnd())
+            if (!ignoreExitValue && result.exitValue != 0) {
+                throw GradleException("`${command.joinToString(" ")}` failed with exit code ${result.exitValue}.")
+            }
+            return text
         }
 
-        execOperations.exec {
-            commandLine(submitCommand)
+        // notarytool's exit code alone does not prove acceptance, so require the JSON status.
+        val submitOutput = ByteArrayOutputStream()
+        val submitResult = execOperations.exec {
+            commandLine(
+                listOf("xcrun", "notarytool", "submit", dmg.absolutePath) + credentials +
+                    listOf("--wait", "--timeout", "30m", "--output-format", "json"),
+            )
+            standardOutput = submitOutput
+            isIgnoreExitValue = true
         }
-        execOperations.exec {
-            commandLine("xcrun", "stapler", "staple", dmg.absolutePath)
+        val submission = runCatching { JsonSlurper().parseText(submitOutput.toString()) as Map<*, *> }.getOrNull()
+        val submissionId = submission?.get("id") as String?
+        val status = submission?.get("status") as String?
+        logger.lifecycle("Notarization submission ${submissionId ?: "<none>"}: ${status ?: "<no status>"}")
+        if (status != "Accepted") {
+            if (submissionId != null) {
+                run("xcrun", "notarytool", "log", submissionId, *credentials.toTypedArray(), ignoreExitValue = true)
+            }
+            throw GradleException(
+                "Apple notarization did not accept ${dmg.name} (status=$status, id=$submissionId, " +
+                    "notarytool exit=${submitResult.exitValue}). Output: ${submitOutput.toString().trim()}",
+            )
         }
+
+        run("xcrun", "stapler", "staple", dmg.absolutePath)
+        run("xcrun", "stapler", "validate", dmg.absolutePath)
+
+        val mountPoint = temporaryDir.resolve("dmg-mount").apply { deleteRecursively() }
+        // The DMG has a license agreement, so hdiutil cancels the attach unless it is accepted on stdin.
+        execOperations.exec {
+            commandLine("hdiutil", "attach", dmg.absolutePath, "-readonly", "-nobrowse", "-mountpoint", mountPoint.absolutePath)
+            standardInput = "Y\n".byteInputStream()
+            standardOutput = ByteArrayOutputStream()
+        }
+        try {
+            val app = mountPoint.resolve("$baseName.app").absolutePath
+            run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
+            val assessment = run("spctl", "--assess", "--type", "execute", "--verbose=4", app)
+            if (!assessment.contains("source=Notarized Developer ID")) {
+                throw GradleException("Gatekeeper did not assess $app as Notarized Developer ID.")
+            }
+        } finally {
+            run("hdiutil", "detach", mountPoint.absolutePath, ignoreExitValue = true)
+        }
+        logger.lifecycle("Notarized, stapled, and verified ${dmg.absolutePath}")
     }
 }
 
@@ -206,6 +260,8 @@ val renameDmg by tasks.registering(Copy::class) {
     }
 
     dependsOn("packageDmg")
+    // Copy the stapled DMG when notarization runs in the same build.
+    mustRunAfter(tasks.withType<AbstractNotarizationTask>())
     from(fromFile)
     into(fromFile.map { it.parent })
     rename {
