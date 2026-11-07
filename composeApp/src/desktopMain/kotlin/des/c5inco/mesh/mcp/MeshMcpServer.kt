@@ -62,7 +62,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
             "Call get_mesh first to read the grid and the color IDs, then edit with update_point and add_color, " +
-            "and check the result with render_png.",
+            "and check the result with render_png. Use undo to take back an edit.",
     ) {
         addTool(
             name = "get_mesh",
@@ -100,6 +100,16 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 required = listOf("hex"),
             ),
         ) { addColor(it) }
+
+        addTool(
+            name = "undo",
+            description = "Undoes the last edit to the mesh, whether the user or an agent made it.",
+        ) { undoOrRedo(redo = false) }
+
+        addTool(
+            name = "redo",
+            description = "Redoes the last undone edit.",
+        ) { undoOrRedo(redo = true) }
 
         addTool(
             name = "render_png",
@@ -189,6 +199,13 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         CallToolResult(
             content = listOf(TextContent("Point ($row, $col) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
         )
+    }
+
+    private suspend fun undoOrRedo(redo: Boolean): CallToolResult = withContext(Dispatchers.Main) {
+        val available = if (redo) configuration.canRedo.value else configuration.canUndo.value
+        if (!available) return@withContext error("Nothing to ${if (redo) "redo" else "undo"}")
+        if (redo) configuration.redo() else configuration.undo()
+        CallToolResult(content = listOf(TextContent(if (redo) "Redid the last undone edit" else "Undid the last edit")))
     }
 
     private suspend fun addColor(request: CallToolRequest): CallToolResult {

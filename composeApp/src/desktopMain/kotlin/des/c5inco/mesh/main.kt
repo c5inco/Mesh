@@ -2,6 +2,14 @@ package des.c5inco.mesh
 
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -45,6 +53,8 @@ fun main() {
                 exitApplication()
             },
             title = "Mesh",
+            // Text fields handle these keys themselves first, so their own text undo still works.
+            onKeyEvent = { handleUndoShortcut(it, configuration) },
         ) {
             IntUiTheme(
                 theme = themeDefinition,
@@ -66,4 +76,17 @@ private fun shutdown(
     runBlocking {
         configuration.saveMeshPoints()
     }
+}
+
+private val isMacOs = System.getProperty("os.name").startsWith("Mac")
+
+private fun handleUndoShortcut(event: KeyEvent, configuration: AppConfiguration): Boolean {
+    val primaryModifier = if (isMacOs) event.isMetaPressed else event.isCtrlPressed
+    if (event.type != KeyEventType.KeyDown || !primaryModifier) return false
+    when {
+        event.key == Key.Z && !event.isShiftPressed -> configuration.undo()
+        event.key == Key.Z || (!isMacOs && event.key == Key.Y) -> configuration.redo()
+        else -> return false
+    }
+    return true
 }

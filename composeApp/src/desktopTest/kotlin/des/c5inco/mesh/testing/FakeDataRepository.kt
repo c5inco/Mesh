@@ -10,7 +10,8 @@ import model.SavedColor
 
 class FakeDataRepository(
     private val meshPoints: Flow<List<MeshPoint>>,
-    initialColors: List<SavedColor> = emptyList(),
+    // Like the app's presets, the palette is never empty.
+    initialColors: List<SavedColor> = List(3) { SavedColor(uid = it + 1L, red = 0, green = 0, blue = 0) },
     private val onSaveMeshPoints: (List<MeshPoint>) -> Unit = {},
 ) : DataRepository {
     private val colors = MutableStateFlow(initialColors)

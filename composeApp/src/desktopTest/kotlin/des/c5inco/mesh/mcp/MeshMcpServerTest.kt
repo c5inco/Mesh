@@ -89,6 +89,18 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `undo reverts an agent edit and redo reapplies it`() = runBlocking {
+        callOk("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 3))
+
+        callOk("undo", emptyMap())
+        assertEquals(0.33f to 2L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+        assertEquals(true, client.callTool("undo", emptyMap()).isError)
+
+        callOk("redo", emptyMap())
+        assertEquals(0.9f to 3L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+    }
+
+    @Test
     fun `update_point rejects an unknown color without changing the point`() = runBlocking {
         val result = client.callTool("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 99))
 
