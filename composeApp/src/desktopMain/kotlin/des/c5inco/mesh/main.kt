@@ -1,13 +1,14 @@
 package des.c5inco.mesh
 
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.AppDataRepository
-import des.c5inco.mesh.mcp.MeshMcpServer
+import des.c5inco.mesh.mcp.McpServerController
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.intui.standalone.theme.IntUiTheme
@@ -31,14 +32,9 @@ fun main() {
             shutdown(configuration)
         })
 
-        DisposableEffect(configuration) {
-            val mcpServer = try {
-                MeshMcpServer(configuration).start()
-            } catch (e: Exception) {
-                println("MCP server failed to start: ${e.message}")
-                null
-            }
-            onDispose { mcpServer?.stop() }
+        val mcpServer = remember(configuration) { McpServerController(configuration) }
+        DisposableEffect(mcpServer) {
+            onDispose { mcpServer.close() }
         }
 
         val themeDefinition = JewelTheme.darkThemeDefinition()
@@ -56,6 +52,7 @@ fun main() {
             ) {
                 App(
                     configuration = configuration,
+                    mcpServer = mcpServer,
                 )
             }
         }
