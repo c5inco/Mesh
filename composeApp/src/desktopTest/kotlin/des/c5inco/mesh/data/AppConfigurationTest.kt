@@ -1,5 +1,6 @@
 package des.c5inco.mesh.data
 
+import data.MeshState
 import des.c5inco.mesh.testing.FakeDataRepository
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
@@ -297,6 +298,19 @@ class AppConfigurationTest {
         assertEquals(2 to 2, configuration.meshState.value.let { it.rows to it.cols })
         configuration.flushPendingSave()
         assertEquals(2 to 2, repository.savedMeshState?.let { it.rows to it.cols })
+    }
+
+    @Test
+    fun `a saved grid size survives a missing points table`() = runBlocking {
+        val repository = FakeDataRepository(
+            meshPoints = flowOf(emptyList()),
+            initialMeshState = MeshState(rows = 5, cols = 6),
+        )
+        val configuration = AppConfiguration(repository)
+        configuration.awaitMeshLoaded()
+
+        assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
+        assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
     }
 
     @Test

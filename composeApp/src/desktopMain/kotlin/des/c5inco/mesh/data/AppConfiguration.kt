@@ -194,13 +194,16 @@ class AppConfiguration(
     private val loadMeshPoints = scope.async {
         val initialMeshPoints = repository.getMeshPoints().first()
         println("Loaded points: $initialMeshPoints")
-        val loadedPoints = if (initialMeshPoints.isEmpty()) {
-            defaultColorPoints
-        } else {
-            initialMeshPoints.toOffsetGrid()
-        }
         // Resizes need the palette, so the mesh counts as loaded only once it has arrived.
         val colorIds = paletteIds.first { it.isNotEmpty() }
+        val savedRows = savedMeshState.rows.coerceIn(2, 10)
+        val savedCols = savedMeshState.cols.coerceIn(2, 10)
+        val loadedPoints = when {
+            initialMeshPoints.isNotEmpty() -> initialMeshPoints.toOffsetGrid()
+            savedRows == defaultColorPoints.size && savedCols == defaultColorPoints[0].size -> defaultColorPoints
+            // No saved points but a saved size, as after a crash before the first points were written.
+            else -> generateMeshPointGrid(savedRows, savedCols, colorIds)
+        }
 
         withContext(Dispatchers.Main) {
             meshPoints.clear()
