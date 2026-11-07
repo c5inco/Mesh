@@ -117,6 +117,9 @@ class AppConfiguration(
         }
     }
 
+    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
+    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
+
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
 
@@ -127,9 +130,8 @@ class AppConfiguration(
         )
     )
 
-    fun addColor(color: SavedColor) {
-        repository.addColor(color)
-    }
+    /** Returns the new color's ID. */
+    suspend fun addColor(color: SavedColor): Long = repository.addColor(color)
 
     fun deleteColor(color: SavedColor) {
         repository.deleteColor(color)
