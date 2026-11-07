@@ -465,7 +465,7 @@ private fun DeleteColorConfirmation(
 ) {
     val gapPx = with(LocalDensity.current) { 4.dp.roundToPx() }
     PopupContainer(
-        onDismissRequest = onCancel,
+        onDismissRequest = { onCancel() },
         horizontalAlignment = Alignment.End,
         popupPositionProvider = remember(gapPx) { SwatchPopupPositionProvider(gapPx) },
     ) {

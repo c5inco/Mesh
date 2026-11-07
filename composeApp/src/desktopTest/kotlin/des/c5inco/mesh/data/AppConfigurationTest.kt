@@ -2,6 +2,10 @@ package des.c5inco.mesh.data
 
 import data.MeshState
 import des.c5inco.mesh.testing.FakeDataRepository
+import des.c5inco.mesh.testing.waitForClipboardText
+import java.awt.GraphicsEnvironment
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -22,9 +26,43 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Test
 
 class AppConfigurationTest {
+    @Test
+    fun `code export includes the current rounded blur and a usable paint modifier`() = runBlocking {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "Needs a system clipboard")
+        val repository = FakeDataRepository(
+            meshPoints = flowOf(emptyList()),
+            initialColors = (1L..3L).map { SavedColor(uid = it, red = (it * 70).toInt(), green = 150, blue = 200) },
+            onSaveMeshPoints = {},
+        )
+        val configuration = AppConfiguration(repository)
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+
+        for ((level, radius) in listOf(0f to 0, .012f to 0, .0125f to 1, .513f to 21, 1f to 40)) {
+            configuration.updateBlurLevel(level)
+            clipboard.setContents(StringSelection(""), null)
+            configuration.exportMeshPointsAsCode()
+            val code = waitForClipboardText("mesh modifier at blur $level") {
+                it.contains("val meshGradientModifier")
+            }
+
+            assertTrue(code.contains("import androidx.compose.ui.draw.paint"))
+            assertTrue(code.contains("hasBicubicColor = true"))
+            assertTrue(code.contains(".paint(meshGradient, sizeToIntrinsics = false)"))
+            if (radius == 0) {
+                assertFalse(code.contains("BlurEffect"), "A zero-radius blur must not be created")
+                assertFalse(code.contains("graphicsLayer"), "An unblurred export needs no effect layer")
+            } else {
+                assertTrue(code.contains("import androidx.compose.ui.graphics.graphicsLayer"))
+                assertTrue(code.contains("renderEffect = BlurEffect($radius.0f, $radius.0f, TileMode.Clamp)"))
+                assertTrue(code.indexOf(".graphicsLayer") < code.indexOf(".paint("), "Blur must wrap the painted mesh")
+            }
+        }
+    }
+
     @Test
     fun `saving waits for initial mesh loading and preserves the default grid`() = runBlocking {
         val loadGate = CompletableDeferred<Unit>()

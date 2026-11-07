@@ -3,14 +3,18 @@ package des.c5inco.mesh.mcp
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.paint
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.renderComposeScene
 import androidx.compose.ui.unit.Density
-import des.c5inco.mesh.common.meshGradient
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.AppConfiguration.Companion.MAX_BLUR_LEVEL
+import des.c5inco.mesh.ui.meshGradientPainter
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -245,14 +249,17 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             return error("The render would be ${width * scale}×${height * scale} px; the limit is $MAX_RENDER_SIDE px per side, so use a smaller scale")
         }
 
+        val painter = meshGradientPainter(points) ?: return error("The mesh has no complete patch to render")
+        // The canvas blurs by this many pixels at 1x; scale it like the app's 2x and 3x PNG export.
+        val blurRadius = (meshState.blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat() * scale
         val png = renderComposeScene(width * scale, height * scale, Density(scale.toFloat())) {
             Box(
-                Modifier.fillMaxSize().meshGradient(
-                    points = points,
-                    blurLevel = (meshState.blurLevel * MAX_BLUR_LEVEL).roundToInt(),
-                    resolutionX = meshState.resolution,
-                    resolutionY = meshState.resolution,
-                )
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        renderEffect = if (blurRadius > 0f) BlurEffect(blurRadius, blurRadius, TileMode.Clamp) else null
+                    }
+                    .paint(painter, sizeToIntrinsics = false)
             )
         }.use { image ->
             // Skia objects hold native memory until closed.

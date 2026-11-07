@@ -24,8 +24,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.paint
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.MeshGradientPainter
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -38,7 +44,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import data.DimensionMode
 import des.c5inco.mesh.common.PointCursor
-import des.c5inco.mesh.common.meshGradient
 import des.c5inco.mesh.data.AppConfiguration.Companion.MAX_BLUR_LEVEL
 import des.c5inco.mesh.data.Notifications
 import des.c5inco.mesh.ui.components.CanvasSnackbar
@@ -53,11 +58,29 @@ import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.theme.colorPalette
 import kotlin.math.roundToInt
 
+/**
+ * The painter for a grid of points, or null before a complete patch exists (points load
+ * asynchronously). Shared by the canvas and the MCP render_png tool so both draw the same gradient.
+ */
+fun meshGradientPainter(colorPoints: List<List<Pair<Offset, Color>>>): MeshGradientPainter? {
+    if (colorPoints.size < 2 || colorPoints.first().size < 2) return null
+    return MeshGradientPainter(
+        rows = colorPoints.lastIndex,
+        columns = colorPoints.first().lastIndex,
+        hasBicubicColor = true,
+    ) {
+        colorPoints.forEachIndexed { row, points ->
+            points.forEachIndexed { column, (position, color) ->
+                setVertex(row, column, position, color)
+            }
+        }
+    }
+}
+
 @Composable
 fun GradientCanvas(
     exportGraphicsLayer: GraphicsLayer,
     exportScale: Int,
-    resolution: Int,
     canvasWidthMode: DimensionMode,
     canvasWidth: Int,
     canvasHeightMode: DimensionMode,
@@ -80,6 +103,11 @@ fun GradientCanvas(
     }
 
     val density = LocalDensity.current
+    val colorPoints = meshPoints.map { row ->
+        row.map { (position, colorId) -> position to availableColors.findColor(colorId) }
+    }
+    val gradientPainter = remember(colorPoints) { meshGradientPainter(colorPoints) }
+    val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
     LaunchedEffect(Unit) {
         launch(Dispatchers.Main) {
@@ -207,19 +235,19 @@ fun GradientCanvas(
                         // Draw the visible graphics layer on the canvas
                         drawLayer(graphicsLayer)
                     }
+                    .graphicsLayer {
+                        renderEffect = if (blurRadius > 0f) {
+                            BlurEffect(blurRadius, blurRadius, TileMode.Clamp)
+                        } else {
+                            null
+                        }
+                    }
                     .then(
-                        // The first frame can come before the saved mesh loads, and an empty grid can't be drawn.
-                        if (meshPoints.isEmpty()) Modifier else Modifier.meshGradient(
-                            points = meshPoints.map { row ->
-                                row.map {
-                                    it.first to availableColors.findColor(it.second)
-                                }
-                            },
-                            blurLevel = (blurLevel * MAX_BLUR_LEVEL).roundToInt(),
-                            resolutionX = resolution,
-                            resolutionY = resolution,
-                            showPoints = showPoints
-                        )
+                        if (gradientPainter != null) {
+                            Modifier.paint(gradientPainter, sizeToIntrinsics = false)
+                        } else {
+                            Modifier
+                        }
                     )
             ) {
                 Spacer(Modifier.fillMaxSize())
