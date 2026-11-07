@@ -68,11 +68,13 @@ import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.Orientation
 import org.jetbrains.jewel.ui.Outline
 import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Divider
 import org.jetbrains.jewel.ui.component.DropdownLink
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconButton
 import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Slider
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
@@ -136,6 +138,7 @@ fun SidePanel(
                 modifier = Modifier.padding(16.dp),
             ) {
                 var showColorInput by remember { mutableStateOf(false) }
+                var colorPendingDeletion by remember { mutableStateOf<SavedColor?>(null) }
 
                 SectionHeader(title = "Colors")
 
@@ -191,11 +194,26 @@ fun SidePanel(
                     customColors.forEach { savedColor ->
                         ColorSwatch(
                             color = savedColor.toColor(),
-                            modifier = Modifier.clickable {
-                                onRemoveColor(savedColor)
-                            }
+                            modifier = Modifier
+                                .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
+                                .clickable {
+                                    showColorInput = false
+                                    colorPendingDeletion = savedColor
+                                }
                         )
                     }
+                }
+                colorPendingDeletion?.let { color ->
+                    DeleteColorConfirmation(
+                        color = color,
+                        pointsUsingColor = meshPoints.sumOf { row -> row.count { it.second == color.uid } },
+                        onCancel = { colorPendingDeletion = null },
+                        onConfirm = {
+                            colorPendingDeletion = null
+                            onRemoveColor(color)
+                        },
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
                 }
             }
 
@@ -424,6 +442,45 @@ private fun StatusText(
     modifier: Modifier = Modifier,
 ) {
     Text(text, fontSize = 12.sp, color = color, modifier = modifier.testTag(MeshTestTags.MCP_SERVER_STATUS))
+}
+
+@Composable
+private fun DeleteColorConfirmation(
+    color: SavedColor,
+    pointsUsingColor: Int,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ColorSwatch(color = color.toColor())
+            Spacer(Modifier.width(8.dp))
+            Text("Delete #${color.toColor().toHexStringNoHash()}?")
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = when (pointsUsingColor) {
+                0 -> "No points use this color."
+                1 -> "1 point uses it and will turn transparent."
+                else -> "$pointsUsingColor points use it and will turn transparent."
+            },
+            fontSize = 12.sp,
+            color = JewelTheme.globalColors.text.info,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(onClick = onCancel, modifier = Modifier.testTag(MeshTestTags.DELETE_COLOR_CANCEL)) {
+                Text("Cancel")
+            }
+            DefaultButton(onClick = onConfirm, modifier = Modifier.testTag(MeshTestTags.DELETE_COLOR_CONFIRM)) {
+                Text("Delete")
+            }
+        }
+    }
 }
 
 @Composable
