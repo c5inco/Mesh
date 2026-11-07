@@ -118,6 +118,10 @@ class AppConfiguration(
      */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
 
+    private val history = EditHistory<EditSnapshot>()
+    val canUndo = history.canUndo
+    val canRedo = history.canRedo
+
     private var resizedWhileLoading = false
 
     private val loadMeshPoints = scope.async {
@@ -134,12 +138,14 @@ class AppConfiguration(
         withContext(Dispatchers.Main) {
             meshPoints.clear()
             meshPoints.addAll(loadedPoints)
-            // Apply a resize requested while loading.
+            // Apply a resize requested while loading, as an undo step back to the loaded grid.
             if (resizedWhileLoading) {
                 val (rows, cols) = meshState.value.let { it.rows to it.cols }
                 if (rows != loadedPoints.size || cols != loadedPoints[0].size) {
+                    val before = snapshot()
                     meshPoints.clear()
                     meshPoints.addAll(generateMeshPointGrid(rows, cols, colorIds))
+                    history.record(before, group = null)
                 }
             }
         }
@@ -149,9 +155,6 @@ class AppConfiguration(
     suspend fun awaitMeshLoaded() = loadMeshPoints.await()
 
 
-    private val history = EditHistory<EditSnapshot>()
-    val canUndo = history.canUndo
-    val canRedo = history.canRedo
 
     val uiState = MutableStateFlow(
         AppUiState(
