@@ -178,68 +178,95 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
 
     doLast {
         val dmg = tasks.named<AbstractJPackageTask>(packageTaskName).get().packagedDmg()
+        val identity = macSigningIdentity!!.let { if (it.startsWith("Developer ID Application:")) it else "Developer ID Application: $it" }
         val credentials = listOf("--keychain-profile", macNotarizationKeychainProfile!!) +
             macNotarizationKeychainPath?.let { listOf("--keychain", it) }.orEmpty()
+        val mountPoint = temporaryDir.resolve("dmg-mount")
 
-        fun run(vararg command: String, ignoreExitValue: Boolean = false): String {
-            val output = ByteArrayOutputStream()
-            val result = execOperations.exec {
+        // Logs a command's output and returns its exit code, stdout, and stderr.
+        fun run(vararg command: String, check: Boolean = true): Triple<Int, String, String> {
+            val stdout = ByteArrayOutputStream()
+            val stderr = ByteArrayOutputStream()
+            val exitCode = execOperations.exec {
                 commandLine(*command)
-                standardOutput = output
-                errorOutput = output
+                standardOutput = stdout
+                errorOutput = stderr
                 isIgnoreExitValue = true
+            }.exitValue
+            listOf(stdout, stderr).map { it.toString().trimEnd() }.filter { it.isNotEmpty() }.forEach { logger.lifecycle(it) }
+            if (check && exitCode != 0) {
+                throw GradleException("`${command.joinToString(" ")}` failed with exit code $exitCode.")
             }
-            val text = output.toString()
-            logger.lifecycle(text.trimEnd())
-            if (!ignoreExitValue && result.exitValue != 0) {
-                throw GradleException("`${command.joinToString(" ")}` failed with exit code ${result.exitValue}.")
-            }
-            return text
+            return Triple(exitCode, stdout.toString(), stderr.toString())
         }
 
-        // notarytool's exit code alone does not prove acceptance, so require the JSON status.
-        val submitOutput = ByteArrayOutputStream()
-        val submitResult = execOperations.exec {
-            commandLine(
-                listOf("xcrun", "notarytool", "submit", dmg.absolutePath) + credentials +
-                    listOf("--wait", "--timeout", "30m", "--output-format", "json"),
-            )
-            standardOutput = submitOutput
-            isIgnoreExitValue = true
-        }
-        val submission = runCatching { JsonSlurper().parseText(submitOutput.toString()) as Map<*, *> }.getOrNull()
-        val submissionId = submission?.get("id") as String?
-        val status = submission?.get("status") as String?
-        logger.lifecycle("Notarization submission ${submissionId ?: "<none>"}: ${status ?: "<no status>"}")
-        if (status != "Accepted") {
-            if (submissionId != null) {
-                run("xcrun", "notarytool", "log", submissionId, *credentials.toTypedArray(), ignoreExitValue = true)
+        fun requireNotarizedDeveloperId(vararg assessCommand: String) {
+            val (_, stdout, stderr) = run(*assessCommand)
+            if (!(stdout + stderr).contains("source=Notarized Developer ID")) {
+                throw GradleException("Gatekeeper did not assess ${assessCommand.last()} as Notarized Developer ID.")
             }
-            throw GradleException(
-                "Apple notarization did not accept ${dmg.name} (status=$status, id=$submissionId, " +
-                    "notarytool exit=${submitResult.exitValue}). Output: ${submitOutput.toString().trim()}",
-            )
         }
 
-        run("xcrun", "stapler", "staple", dmg.absolutePath)
-        run("xcrun", "stapler", "validate", dmg.absolutePath)
-
-        val mountPoint = temporaryDir.resolve("dmg-mount").apply { deleteRecursively() }
-        // The DMG has a license agreement, so hdiutil cancels the attach unless it is accepted on stdin.
-        execOperations.exec {
-            commandLine("hdiutil", "attach", dmg.absolutePath, "-readonly", "-nobrowse", "-mountpoint", mountPoint.absolutePath)
-            standardInput = "Y\n".byteInputStream()
-            standardOutput = ByteArrayOutputStream()
+        // Never delete recursively here: a stale mount contains the DMG's Applications -> /Applications symlink.
+        fun unmount() {
+            if (mountPoint.exists()) run("hdiutil", "detach", mountPoint.absolutePath, check = false)
+            if (mountPoint.exists() && !mountPoint.delete()) {
+                throw GradleException("$mountPoint is still mounted or not empty. Eject it and rerun $name.")
+            }
         }
+
         try {
-            val app = mountPoint.resolve("$baseName.app").absolutePath
-            run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
-            val assessment = run("spctl", "--assess", "--type", "execute", "--verbose=4", app)
-            if (!assessment.contains("source=Notarized Developer ID")) {
-                throw GradleException("Gatekeeper did not assess $app as Notarized Developer ID.")
+            // Sign the DMG itself so the stapled DMG can be assessed by Gatekeeper without a network lookup.
+            run("codesign", "--force", "--timestamp", "--sign", identity, dmg.absolutePath)
+
+            // notarytool's exit code alone does not prove acceptance, so require the JSON status.
+            val (submitExit, submitStdout, submitStderr) = run(
+                *(listOf("xcrun", "notarytool", "submit", dmg.absolutePath) + credentials +
+                    listOf("--wait", "--timeout", "30m", "--output-format", "json")).toTypedArray(),
+                check = false,
+            )
+            val submission = runCatching {
+                JsonSlurper().parseText(submitStdout.substring(submitStdout.indexOf('{'), submitStdout.lastIndexOf('}') + 1)) as Map<*, *>
+            }.getOrNull()
+            val submissionId = submission?.get("id") as? String
+            val status = submission?.get("status") as? String
+            logger.lifecycle("Notarization submission ${submissionId ?: "<none>"}: ${status ?: "<no status>"}")
+            if (status != "Accepted") {
+                if (submissionId != null) {
+                    run("xcrun", "notarytool", "log", submissionId, *credentials.toTypedArray(), check = false)
+                }
+                throw GradleException(
+                    "Apple notarization did not accept ${dmg.name} (status=$status, id=$submissionId, notarytool exit=$submitExit). " +
+                        "stdout: ${submitStdout.trim()} stderr: ${submitStderr.trim()}",
+                )
             }
-        } finally {
-            run("hdiutil", "detach", mountPoint.absolutePath, ignoreExitValue = true)
+
+            run("xcrun", "stapler", "staple", dmg.absolutePath)
+            run("xcrun", "stapler", "validate", dmg.absolutePath)
+            requireNotarizedDeveloperId(
+                "spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg.absolutePath,
+            )
+
+            unmount()
+            // The DMG has a license agreement, so hdiutil cancels the attach unless it is accepted on stdin.
+            execOperations.exec {
+                commandLine("hdiutil", "attach", dmg.absolutePath, "-readonly", "-nobrowse", "-mountpoint", mountPoint.absolutePath)
+                standardInput = "Y\n".byteInputStream()
+                standardOutput = ByteArrayOutputStream()
+            }
+            try {
+                val app = mountPoint.resolve("$baseName.app").absolutePath
+                run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
+                requireNotarizedDeveloperId("spctl", "--assess", "--type", "execute", "--verbose=4", app)
+            } finally {
+                unmount()
+            }
+        } catch (failure: Throwable) {
+            // Keep a stapled but unverified DMG out of the release path.
+            val unverified = dmg.resolveSibling("${dmg.name}.unverified")
+            unverified.delete()
+            if (dmg.renameTo(unverified)) logger.error("Moved ${dmg.name} to ${unverified.name}; do not distribute it.")
+            throw failure
         }
         logger.lifecycle("Notarized, stapled, and verified ${dmg.absolutePath}")
     }
@@ -253,15 +280,14 @@ val currentArch: String = when (val osArch = System.getProperty("os.arch")) {
 
 val renameDmg by tasks.registering(Copy::class) {
     group = "distribution"
-    description = "Rename the packaged DMG to mesh-<version>-mac-<arch>.dmg"
+    description = "Copy the notarized DMG to mesh-<version>-mac-<arch>.dmg"
 
     val fromFile = tasks.named<AbstractJPackageTask>("packageDmg").map { task ->
         task.destinationDir.asFile.get().toPath().listDirectoryEntries("$baseName*.dmg").single()
     }
 
-    dependsOn("packageDmg")
-    // Copy the stapled DMG when notarization runs in the same build.
-    mustRunAfter(tasks.withType<AbstractNotarizationTask>())
+    // The release-named copy must always be the notarized, stapled DMG.
+    dependsOn("notarizeDmg")
     from(fromFile)
     into(fromFile.map { it.parent })
     rename {

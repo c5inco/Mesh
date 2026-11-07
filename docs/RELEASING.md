@@ -20,8 +20,8 @@ For a Developer ID release, the build must satisfy two independent checks:
 Compose Desktop signs the app, its bundled runtime, and the native libraries
 inside its jars with the hardened runtime, a secure timestamp, and the JVM
 entitlements it needs (`allow-jit`, `allow-unsigned-executable-memory`, and
-`disable-library-validation`). The DMG container itself is not signed; Apple's
-notarization ticket is stapled to it instead.
+`disable-library-validation`). `notarizeDmg` then signs the DMG container with
+the same identity, so Gatekeeper can assess the stapled DMG offline.
 
 Compose Desktop's own notarization task only accepts Apple ID credentials, so
 Mesh replaces its action with a `notarytool --keychain-profile` flow that keeps
@@ -121,30 +121,38 @@ composeApp/build/compose/binaries/main/dmg/
 ```
 
 `notarizeDmg` refuses to start unless signing, the signing identity, and the
-keychain profile are configured. It then runs `packageDmg`, submits the DMG
-with the configured `--keychain-profile`, and waits for Apple's response. The
-task fails, printing Apple's notary log, unless the submission status is
-`Accepted`. After acceptance it staples the ticket and verifies the result:
+keychain profile are configured. It then runs `packageDmg`, signs the DMG,
+submits it with the configured `--keychain-profile`, and waits for Apple's
+response. The task fails, printing Apple's notary log, unless the submission
+status is `Accepted`. After acceptance it staples the ticket and verifies the
+result:
 
 1. `xcrun stapler validate` on the DMG.
-2. `codesign --verify --deep --strict` on the `Mesh.app` inside the mounted DMG.
-3. `spctl --assess --type execute` on that app, which must report
+2. `spctl --assess --type open --context context:primary-signature` on the
+   stapled DMG, which must report `source=Notarized Developer ID`.
+3. `codesign --verify --deep --strict` on the `Mesh.app` inside the mounted DMG.
+4. `spctl --assess --type execute` on that app, which must also report
    `source=Notarized Developer ID`.
 
-The task fails if any check fails, so a successful `notarizeDmg` means the DMG
-was accepted, stapled, and passed Gatekeeper on the release machine.
+A successful `notarizeDmg` means the DMG was accepted, stapled, and passed
+Gatekeeper on the release machine. If any step after packaging fails, the task
+renames the DMG to `Mesh-<version>.dmg.unverified` so a stapled but unverified
+DMG never sits at the release path. Do not distribute an `.unverified` file.
 
 The equivalent manual commands are:
 
 ```bash
 DMG=composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
 ./gradlew :composeApp:packageDmg
+codesign --force --timestamp \
+  --sign "Developer ID Application: Example Developer (TEAMID)" "$DMG"
 xcrun notarytool submit "$DMG" \
   --keychain-profile apple-notary \
   --wait \
   --timeout 30m
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
 # The DMG shows a license agreement, so accept it on stdin when mounting.
 mkdir -p /tmp/mesh-dmg-mount
@@ -167,22 +175,17 @@ xcrun notarytool info <submission-id> --keychain-profile apple-notary
 ## Optional: Friendly DMG Filename
 
 Compose Desktop names the packaged file `Mesh-<version>.dmg`. To also produce a
-copy named `mesh-<version>-mac-<arch>.dmg`:
+release-named copy, `mesh-<version>-mac-<arch>.dmg`:
 
 ```bash
 ./gradlew :composeApp:renameDmg
 ```
 
-To rename the notarized DMG, run both tasks in the same build:
-
-```bash
-./gradlew :composeApp:notarizeDmg :composeApp:renameDmg
-```
-
-`renameDmg` always runs after notarization in that build, so the copy is the
-stapled DMG. Stapling changes `packageDmg`'s output, so a later build that runs
-`packageDmg` (including `renameDmg` on its own) repackages an unstapled DMG over
-it. Copy the notarized DMG out of `build/` before running other packaging tasks.
+`renameDmg` depends on `notarizeDmg`, so it needs the same signing and
+notarization setup and always copies the notarized, stapled DMG. Signing and
+stapling change `packageDmg`'s output, so any later build that runs
+`packageDmg` repackages an unsigned DMG over it. Copy the notarized DMG out of
+`build/` before running other packaging tasks.
 
 ## Failure Modes
 
@@ -194,8 +197,9 @@ If notarization returns `Invalid`, the task prints Apple's log with the
 rejected files. Fix the signing problem and rerun `notarizeDmg`; do not
 distribute the DMG.
 
-If `hdiutil attach` reports `Resource busy`, eject any mounted copy of the DMG
-and rerun the task.
+If `hdiutil attach` reports `Resource busy`, or the task reports that its
+`dmg-mount` directory is still mounted, eject any mounted copy of the DMG and
+rerun the task.
 
 If `codesign` cannot find the identity, confirm the Developer ID certificate and
 private key are installed on the release machine:
