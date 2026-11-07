@@ -222,7 +222,7 @@ class AppConfiguration(
             // can leave a grid size that doesn't match the points; the points win.
             meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
             // Save a grid created here rather than loaded, edits made while loading, and any size repaired above.
-            if (initialMeshPoints.isEmpty() || meshState.value != savedMeshState) requestSave()
+            if (initialMeshPoints.isEmpty() || resizedWhileLoading || meshState.value != savedMeshState) requestSave()
         }
     }
 
