@@ -9,6 +9,7 @@ import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
+import data.MeshState
 import des.c5inco.mesh.common.toHexStringNoHash
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -22,15 +23,15 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import model.MeshPoint
 import model.SavedColor
 import model.distributedEvenly
 import model.findColor
@@ -43,6 +44,7 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 import kotlin.time.Duration.Companion.seconds
 
@@ -118,8 +120,11 @@ class AppConfiguration(
 
     var meshState = MutableStateFlow(repository.loadMeshState())
 
+    /**
+     * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
+     * background work such as loading and grid regeneration hands its result to the UI thread.
+     */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
-    private val meshPointsMutex = Mutex()
 
     private val loadMeshPoints = scope.async {
         val initialMeshPoints = repository.getMeshPoints().first()
@@ -130,32 +135,65 @@ class AppConfiguration(
             initialMeshPoints.toOffsetGrid()
         }
 
-        meshPointsMutex.withLock {
+        withContext(Dispatchers.Main) {
             meshPoints.clear()
             meshPoints.addAll(loadedPoints)
         }
     }
 
+    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
+    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
+
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
 
-    /** Point edits; [meshState] changes are observed directly. Buffered so no request is lost before collection starts. */
+    /** Bumped by every grid request and undo/redo, so only the latest regeneration applies. */
+    private val gridGeneration = AtomicInteger()
+
+    /** The state and points to persist, captured together on the UI thread after each change. */
+    private class PendingSave(val meshState: MeshState, val points: List<MeshPoint>)
+
+    @Volatile
+    private var latestSave: PendingSave? = null
+    private val saveMutex = Mutex()
+    /** Buffered so no request is lost before collection starts. */
     private val saveRequests = Channel<Unit>(Channel.CONFLATED)
 
     init {
         // Save soon after edits stop, so a crash loses at most the last moment of work.
         scope.launch {
             @OptIn(FlowPreview::class)
-            merge(saveRequests.receiveAsFlow(), meshState.drop(1).map {}).debounce(AUTOSAVE_DELAY).collect {
+            saveRequests.receiveAsFlow().debounce(AUTOSAVE_DELAY).collect {
                 try {
-                    saveMeshState()
-                    saveMeshPoints()
+                    flushPendingSave()
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
-                    println("Autosave failed: ${e.message}")
+                    println("Autosave failed, retrying: ${e.message}")
+                    delay(AUTOSAVE_DELAY)
+                    saveRequests.trySend(Unit)
                 }
             }
         }
+    }
+
+    /** Captures the current state for autosave. Call on the UI thread after a change. */
+    private fun requestSave() {
+        val points = meshPoints.toList()
+        if (points.isEmpty()) return
+        // Persist the size of the points actually shown, not a resize still being generated.
+        val state = meshState.value.copy(rows = points.size, cols = points[0].size)
+        latestSave = PendingSave(state, points.toSavedMeshPoints())
+        saveRequests.trySend(Unit)
+    }
+
+    /**
+     * Writes the latest captured state, if any. Safe from any thread, including a shutdown hook:
+     * it never waits on the UI thread, and writes never interleave.
+     */
+    suspend fun flushPendingSave() = saveMutex.withLock {
+        val save = latestSave ?: return@withLock
+        repository.saveMeshState(save.meshState)
+        repository.saveMeshPoints(save.points)
     }
 
     private val history = EditHistory<EditSnapshot>()
@@ -183,12 +221,14 @@ class AppConfiguration(
                 canvasWidthMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasWidth(width: Int) {
         meshState.update {
             it.copy(canvasWidth = width)
         }
+        requestSave()
     }
 
     fun updateCanvasHeightMode() {
@@ -198,12 +238,14 @@ class AppConfiguration(
                 canvasHeightMode = if (current == DimensionMode.Fixed) DimensionMode.Fill else DimensionMode.Fixed
             )
         }
+        requestSave()
     }
 
     fun updateCanvasHeight(height: Int) {
         meshState.update {
             it.copy(canvasHeight = height)
         }
+        requestSave()
     }
 
     fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
@@ -218,26 +260,24 @@ class AppConfiguration(
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) = recordEdit {
+    // The undo step for a resize is recorded when the new grid arrives; see generateMeshPoints.
+    fun updateTotalRows(rows: Int) {
         meshState.update {
             it.copy(rows = rows.coerceIn(2, 10))
         }
         generateMeshPoints()
     }
 
-    fun updateTotalCols(cols: Int) = recordEdit {
+    fun updateTotalCols(cols: Int) {
         meshState.update {
             it.copy(cols = cols.coerceIn(2, 10))
         }
         generateMeshPoints()
     }
 
-    fun saveMeshState() {
-        repository.saveMeshState(meshState.value)
-    }
-
     private fun generateMeshPoints() {
         val requestedMeshState = meshState.value
+        val generation = gridGeneration.incrementAndGet()
         val previousJob = generateMeshPointsJob
         generateMeshPointsJob = scope.async {
             loadMeshPoints.await()
@@ -248,9 +288,14 @@ class AppConfiguration(
                 colorIds = allColors.map(SavedColor::uid),
             )
 
-            meshPointsMutex.withLock {
+            withContext(Dispatchers.Main) {
+                // A newer resize or an undo since this request supersedes it.
+                if (generation != gridGeneration.get()) return@withContext
+                val before = snapshot()
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
+                if (snapshot() != before) history.record(before, group = null)
+                requestSave()
             }
         }
         previousJob?.cancel()
@@ -276,6 +321,7 @@ class AppConfiguration(
         meshPoints.addAll(newPoints)
     }
 
+    /** Waits for loading and any pending regeneration, then saves the current state and points. */
     suspend fun saveMeshPoints() {
         loadMeshPoints.await()
 
@@ -291,20 +337,24 @@ class AppConfiguration(
             if (pendingGeneration === generateMeshPointsJob) break
         }
 
-        meshPointsMutex.withLock {
-            val points = meshPoints.toSavedMeshPoints()
-            println("Saved: $points")
-            repository.saveMeshPoints(points)
-        }
+        requestSave()
+        flushPendingSave()
     }
 
     /**
-     * Makes points that used a deleted palette color transparent. Palette deletion is not undoable,
-     * so this rewrites history too rather than letting undo bring back the deleted ID.
+     * Makes points that used a deleted palette color transparent, and resets the canvas background
+     * to the default if it used the color. Palette deletion is not undoable, so this rewrites history
+     * too rather than letting undo bring back the deleted ID.
      */
     fun removeColorFromMeshPoints(colorToRemove: Long) {
-        history.replaceAll { it.copy(points = it.points.replaceColor(colorToRemove, replacementColorId = -1L)) }
-        saveRequests.trySend(Unit)
+        fun Long.withoutDeletedColor() = if (this == colorToRemove) -1L else this
+        history.replaceAll {
+            it.copy(
+                points = it.points.replaceColor(colorToRemove, replacementColorId = -1L),
+                canvasBackgroundColor = it.canvasBackgroundColor.withoutDeletedColor(),
+            )
+        }
+        canvasBackgroundColor.update { it.withoutDeletedColor() }
         val updatedPoints = meshPoints.replaceColor(
             colorId = colorToRemove,
             replacementColorId = -1L,
@@ -312,6 +362,7 @@ class AppConfiguration(
         updatedPoints.forEachIndexed { index, row ->
             meshPoints[index] = row
         }
+        requestSave()
     }
 
     fun exportMeshPointsAsCode() {
@@ -374,24 +425,22 @@ class AppConfiguration(
         canvasBackgroundColor = canvasBackgroundColor.value,
     )
 
-    private fun requestedGrid() = meshState.value.let { it.rows to it.cols }
-
     /** Runs [edit] and adds an undo step if it changed anything. */
     private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
         // Before the saved mesh loads there is nothing to go back to.
         if (meshPoints.isEmpty()) return edit()
 
         val before = snapshot()
-        val gridBefore = requestedGrid()
         edit()
-        if (snapshot() != before || requestedGrid() != gridBefore) {
+        if (snapshot() != before) {
             history.record(before, group)
-            saveRequests.trySend(Unit)
+            requestSave()
         }
     }
 
     private fun restore(snapshot: EditSnapshot) {
         // A pending grid regeneration would overwrite the restored points.
+        gridGeneration.incrementAndGet()
         val pendingGeneration = generateMeshPointsJob
         generateMeshPointsJob = null
         pendingGeneration?.cancel()
@@ -402,7 +451,7 @@ class AppConfiguration(
         canvasBackgroundColor.value = snapshot.canvasBackgroundColor
         meshPoints.clear()
         meshPoints.addAll(snapshot.points)
-        saveRequests.trySend(Unit)
+        requestSave()
     }
 
     fun toggleShowingPoints() {

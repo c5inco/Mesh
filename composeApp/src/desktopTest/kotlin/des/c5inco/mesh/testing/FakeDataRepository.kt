@@ -36,7 +36,13 @@ class FakeDataRepository(
 
     override fun loadMeshState(): MeshState = MeshState()
 
-    override fun saveMeshState(state: MeshState) = Unit
+    @Volatile
+    var savedMeshState: MeshState? = null
+        private set
+
+    override fun saveMeshState(state: MeshState) {
+        savedMeshState = state
+    }
 
     override fun getMeshPoints(): Flow<List<MeshPoint>> = meshPoints
 
