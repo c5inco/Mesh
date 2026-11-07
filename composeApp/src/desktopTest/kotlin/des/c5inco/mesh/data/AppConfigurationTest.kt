@@ -7,7 +7,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.yield
 import androidx.compose.ui.geometry.Offset
 import model.MeshPoint
 import model.SavedColor
@@ -84,50 +83,23 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `saving waits for pending regeneration`() = runBlocking {
+    fun `resizing replaces the grid right away`() = runBlocking {
         val savedPoints = AtomicReference<List<MeshPoint>>()
         val repository = FakeDataRepository(
             meshPoints = flowOf(emptyList()),
             onSaveMeshPoints = savedPoints::set,
         )
         val configuration = AppConfiguration(repository)
-        configuration.saveMeshPoints()
-        savedPoints.set(null)
-
-        configuration.updateTotalRows(4)
-        val save = async { configuration.saveMeshPoints() }
-        yield()
-        assertFalse(save.isCompleted)
-        assertNull(savedPoints.get())
-
-        repository.setColors(listOf(SavedColor(uid = 42L, red = 1, green = 2, blue = 3)))
-        save.await()
-
-        assertEquals(16, savedPoints.get().size)
-        assertEquals(3, savedPoints.get().maxOf(MeshPoint::row))
-    }
-
-    @Test
-    fun `rapid dimension updates save only the latest requested grid`() = runBlocking {
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flowOf(emptyList()),
-            onSaveMeshPoints = savedPoints::set,
-        )
-        val configuration = AppConfiguration(repository)
-        configuration.saveMeshPoints()
-        savedPoints.set(null)
+        configuration.awaitMeshLoaded()
 
         configuration.updateTotalRows(4)
         configuration.updateTotalCols(5)
-        repository.setColors(listOf(SavedColor(uid = 42L, red = 1, green = 2, blue = 3)))
-        configuration.saveMeshPoints()
+        assertEquals(List(4) { 5 }, configuration.meshPoints.map { it.size })
 
+        configuration.saveMeshPoints()
         assertEquals(20, savedPoints.get().size)
         assertEquals(3, savedPoints.get().maxOf(MeshPoint::row))
         assertEquals(4, savedPoints.get().maxOf(MeshPoint::col))
-        assertEquals(4, configuration.meshPoints.size)
-        assertEquals(List(4) { 5 }, configuration.meshPoints.map { it.size })
     }
 
     @Test
@@ -170,7 +142,6 @@ class AppConfigurationTest {
         val beforeResize = configuration.meshPoints.toList()
 
         configuration.updateTotalRows(5)
-        configuration.saveMeshPoints() // Waits for the new grid.
         assertEquals(5, configuration.meshPoints.size)
 
         configuration.undo()
@@ -183,62 +154,38 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `undo keeps the grid size and points consistent while a regeneration is pending`() = runBlocking {
-        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
-        val configuration = AppConfiguration(repository)
-        configuration.saveMeshPoints() // Waits for the initial grid to load.
+    fun `each resize is its own undo step`() = runBlocking {
+        val configuration = loadedConfiguration()
 
-        // With no colors yet, regeneration waits, so the column change sees the old 3×4 points.
         configuration.updateTotalRows(5)
         configuration.updateTotalCols(6)
-        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
-        configuration.saveMeshPoints()
 
+        configuration.undo()
+        assertEquals(5 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(List(5) { 4 }, configuration.meshPoints.map { it.size })
         configuration.undo()
         assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
         assertEquals(List(3) { 4 }, configuration.meshPoints.map { it.size })
     }
 
     @Test
-    fun `quick resizes before the grid arrives make one undo step`() = runBlocking {
-        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
-        val configuration = AppConfiguration(repository)
-        configuration.saveMeshPoints() // Waits for the initial grid to load.
-
-        configuration.updateTotalRows(4)
+    fun `undo steps back through a point edit, a resize, and a later edit in order`() = runBlocking {
+        val configuration = loadedConfiguration()
+        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
         configuration.updateTotalRows(5)
-        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
-        configuration.saveMeshPoints() // Waits for the new grid.
-        assertEquals(5, configuration.meshPoints.size)
+        configuration.updateBlurLevel(0.5f)
 
         configuration.undo()
-        assertEquals(3, configuration.meshPoints.size)
-        assertFalse(configuration.canUndo.value)
-
-        configuration.redo()
+        assertEquals(0f, configuration.meshState.value.blurLevel)
         assertEquals(5, configuration.meshPoints.size)
-        assertEquals(5, configuration.meshState.value.rows)
-    }
 
-    @Test
-    fun `undo during a pending resize cancels the resize, not the edit before it`() = runBlocking {
-        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
-        val configuration = AppConfiguration(repository)
-        configuration.saveMeshPoints()
-        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
-
-        configuration.updateTotalRows(5) // Waits for colors.
         configuration.undo()
         assertEquals(3, configuration.meshState.value.rows)
-        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
-        configuration.saveMeshPoints()
-
-        // The cancelled resize never lands, and the earlier point edit is still in place and undoable.
-        assertEquals(3, configuration.meshPoints.size)
         assertEquals(Offset(0.2f, 0.5f) to 3L, configuration.meshPoints[1][1])
+
         configuration.undo()
         assertEquals(Offset(0.33f, 0.8f) to 2L, configuration.meshPoints[1][1])
-        assertEquals(3, configuration.meshPoints.size)
+        assertFalse(configuration.canUndo.value)
     }
 
     @Test
@@ -288,5 +235,5 @@ class AppConfigurationTest {
             meshPoints = flowOf(emptyList()),
             initialColors = listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)),
         )
-    ).also { it.saveMeshPoints() } // Waits for the initial grid to load.
+    ).also { it.awaitMeshLoaded() }
 }
