@@ -1,9 +1,17 @@
 package des.c5inco.mesh.mcp
 
+import androidx.compose.ui.geometry.Offset
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.testing.FakeDataRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.server.engine.EmbeddedServer
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.mcpStreamableHttpTransport
@@ -44,6 +52,7 @@ class MeshMcpServerTest {
     )
     private val configuration = AppConfiguration(repository)
     private lateinit var server: EmbeddedServer<*, *>
+    private var port = 0
     private val httpClient = HttpClient(CIO)
     private val client = Client(Implementation(name = "test", version = "1.0"))
 
@@ -51,7 +60,7 @@ class MeshMcpServerTest {
     fun connect() = runBlocking {
         configuration.saveMeshPoints() // Waits for the initial grid to load.
         server = MeshMcpServer(configuration).start(port = 0)
-        val port = server.engine.resolvedConnectors().first().port
+        port = server.engine.resolvedConnectors().first().port
         client.connect(httpClient.mcpStreamableHttpTransport("http://127.0.0.1:$port/mcp"))
     }
 
@@ -92,8 +101,38 @@ class MeshMcpServerTest {
         withContext(Dispatchers.Main) { configuration.removeColorFromMeshPoints(2L) }
 
         callOk("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.4))
+        callOk("update_point", mapOf("row" to 1, "col" to 1, "y" to 0.6, "colorId" to -1))
 
-        assertEquals(0.4f to -1L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+        assertEquals(Offset(0.4f, 0.6f) to -1L, configuration.meshPoints[1][1])
+    }
+
+    @Test
+    fun `update_point recolors a point the side panel placed outside 0 to 1`() = runBlocking {
+        withContext(Dispatchers.Main) { configuration.updateMeshPoint(1, 1, Offset(2f, 0.5f) to 2L) }
+
+        callOk("update_point", mapOf("row" to 1, "col" to 1, "colorId" to 3))
+        assertEquals(Offset(2f, 0.5f) to 3L, configuration.meshPoints[1][1])
+
+        assertEquals(true, client.callTool("update_point", mapOf("row" to 1, "col" to 1, "x" to 1.5)).isError)
+    }
+
+    @Test
+    fun `render_png refuses a bitmap larger than the limit`() = runBlocking {
+        withContext(Dispatchers.Main) { configuration.updateCanvasWidth(5000) }
+
+        assertEquals(true, client.callTool("render_png", mapOf("scale" to 2)).isError)
+        callOk("render_png", mapOf("scale" to 1))
+        Unit
+    }
+
+    @Test
+    fun `requests from a web page origin are rejected`() = runBlocking {
+        val response = httpClient.post("http://127.0.0.1:$port/mcp") {
+            header(HttpHeaders.Origin, "https://evil.example")
+            contentType(ContentType.Application.Json)
+            setBody("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")
+        }
+        assertEquals(HttpStatusCode.Forbidden, response.status)
     }
 
     @Test

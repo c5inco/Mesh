@@ -117,6 +117,9 @@ class AppConfiguration(
         }
     }
 
+    /** Suspends until the saved mesh has loaded, so callers never see an empty grid. */
+    suspend fun awaitMeshLoaded() = loadMeshPoints.await()
+
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
 
