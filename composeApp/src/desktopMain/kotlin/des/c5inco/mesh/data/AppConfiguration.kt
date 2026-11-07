@@ -13,12 +13,19 @@ import des.c5inco.mesh.common.toHexStringNoHash
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -37,6 +44,7 @@ import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
+import kotlin.time.Duration.Companion.seconds
 
 data class AppUiState(
     val showPoints: Boolean = false,
@@ -82,6 +90,7 @@ class AppConfiguration(
 
     companion object {
         const val MAX_BLUR_LEVEL = 40
+        private val AUTOSAVE_DELAY = 1.seconds
 
         fun saveImage(image: BufferedImage, scale: Int) {
             try {
@@ -128,6 +137,25 @@ class AppConfiguration(
 
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
+
+    /** Point edits; [meshState] changes are observed directly. */
+    private val saveRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    init {
+        // Save soon after edits stop, so a crash loses at most the last moment of work.
+        scope.launch {
+            @OptIn(FlowPreview::class)
+            merge(saveRequests, meshState.drop(1).map {}).debounce(AUTOSAVE_DELAY).collect {
+                try {
+                    saveMeshState()
+                    saveMeshPoints()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    println("Autosave failed: ${e.message}")
+                }
+            }
+        }
+    }
 
     private val history = EditHistory<EditSnapshot>()
     val canUndo = history.canUndo
@@ -346,7 +374,10 @@ class AppConfiguration(
     private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
         val before = snapshot()
         edit()
-        if (snapshot() != before) history.record(before, group)
+        if (snapshot() != before) {
+            history.record(before, group)
+            saveRequests.tryEmit(Unit)
+        }
     }
 
     private fun restore(snapshot: EditSnapshot) {
@@ -361,6 +392,7 @@ class AppConfiguration(
         canvasBackgroundColor.value = snapshot.canvasBackgroundColor
         meshPoints.clear()
         meshPoints.addAll(snapshot.points)
+        saveRequests.tryEmit(Unit)
     }
 
     fun toggleShowingPoints() {

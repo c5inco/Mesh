@@ -4,6 +4,10 @@ import des.c5inco.mesh.testing.FakeDataRepository
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -194,6 +198,26 @@ class AppConfigurationTest {
         assertFalse(configuration.canRedo.value)
         configuration.redo()
         assertEquals(-1L, configuration.canvasBackgroundColor.value)
+    }
+
+    @Test
+    fun `edits are saved without waiting for the app to quit`() = runBlocking {
+        val saves = Channel<List<MeshPoint>>(Channel.UNLIMITED)
+        val configuration = AppConfiguration(
+            FakeDataRepository(
+                meshPoints = flowOf(emptyList()),
+                initialColors = listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)),
+                onSaveMeshPoints = { saves.trySend(it) },
+            )
+        )
+
+        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
+        configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
+
+        val saved = withTimeout(5.seconds) { saves.receive() }
+        assertEquals(MeshPoint(row = 1, col = 1, x = 0.3f, y = 0.6f, savedColorId = 3L), saved.single { it.row == 1 && it.col == 1 })
+        delay(1.5.seconds)
+        assertTrue(saves.isEmpty, "Rapid edits should save once")
     }
 
     private suspend fun loadedConfiguration() = AppConfiguration(
