@@ -3,9 +3,11 @@ package des.c5inco.mesh.data
 import des.c5inco.mesh.testing.FakeDataRepository
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.flow
@@ -336,6 +338,35 @@ class AppConfigurationTest {
 
         val saved = withTimeout(10.seconds) { saves.receive() }
         assertEquals(0.3f, saved.single { it.row == 1 && it.col == 1 }.x)
+    }
+
+    @Test
+    fun `a saved grid size that doesn't match the saved points is repaired on load`() = runBlocking {
+        // The state file says 3×4 (the default), but the points table holds a 2×2 grid.
+        val twoByTwo = listOf(0 to 0, 0 to 1, 1 to 0, 1 to 1).map { (row, col) ->
+            MeshPoint(row = row, col = col, x = col.toFloat(), y = row.toFloat(), savedColorId = 1L)
+        }
+        val repository = FakeDataRepository(meshPoints = flowOf(twoByTwo))
+        val configuration = AppConfiguration(repository)
+        configuration.awaitMeshLoaded()
+
+        assertEquals(2 to 2, configuration.meshState.value.let { it.rows to it.cols })
+        configuration.flushPendingSave()
+        assertEquals(2 to 2, repository.savedMeshState?.let { it.rows to it.cols })
+    }
+
+    @Test
+    fun `an edit made while the mesh loads is saved`() = runBlocking {
+        val loadGate = CompletableDeferred<Unit>()
+        val repository = FakeDataRepository(meshPoints = flow { loadGate.await(); emit(emptyList()) })
+        val configuration = AppConfiguration(repository)
+
+        withContext(Dispatchers.Main) { configuration.updateBlurLevel(0.5f) }
+        loadGate.complete(Unit)
+        configuration.awaitMeshLoaded()
+        configuration.flushPendingSave()
+
+        assertEquals(0.5f, repository.savedMeshState?.blurLevel)
     }
 
     private suspend fun loadedConfiguration(onSaveMeshPoints: (List<MeshPoint>) -> Unit = {}) = AppConfiguration(
