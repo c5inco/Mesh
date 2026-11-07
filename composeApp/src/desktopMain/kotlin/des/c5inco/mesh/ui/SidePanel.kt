@@ -41,6 +41,12 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import data.DimensionMode
@@ -457,11 +463,11 @@ private fun DeleteColorConfirmation(
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val gapPx = with(LocalDensity.current) { 4.dp.roundToPx() }
     PopupContainer(
         onDismissRequest = onCancel,
-        // Open toward the canvas: the side panel sits against the window's right edge, and Jewel
-        // doesn't move popups back inside the window horizontally.
         horizontalAlignment = Alignment.End,
+        popupPositionProvider = remember(gapPx) { SwatchPopupPositionProvider(gapPx) },
     ) {
         Column(Modifier.width(260.dp).padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -494,6 +500,29 @@ private fun DeleteColorConfirmation(
                 }
             }
         }
+    }
+}
+
+/**
+ * Places a popup below its swatch, right-aligned so it opens toward the canvas, and keeps it inside
+ * the window: Jewel's menu positioning doesn't move popups back inside the window horizontally.
+ */
+private class SwatchPopupPositionProvider(private val gapPx: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val x = (anchorBounds.right - popupContentSize.width)
+            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+        val below = anchorBounds.bottom + gapPx
+        val y = if (below + popupContentSize.height <= windowSize.height) {
+            below
+        } else {
+            (anchorBounds.top - gapPx - popupContentSize.height).coerceAtLeast(0)
+        }
+        return IntOffset(x, y)
     }
 }
 
