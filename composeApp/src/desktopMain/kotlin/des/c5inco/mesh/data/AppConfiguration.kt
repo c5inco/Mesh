@@ -22,8 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import model.SavedColor
 import model.distributedEvenly
 import model.findColor
@@ -36,6 +35,7 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 
 data class AppUiState(
@@ -109,8 +109,11 @@ class AppConfiguration(
 
     var meshState = MutableStateFlow(repository.loadMeshState())
 
+    /**
+     * The grid of points. Like the rest of the mesh state, it is written only on the UI thread:
+     * background work such as loading and grid regeneration hands its result to the UI thread.
+     */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
-    private val meshPointsMutex = Mutex()
 
     private val loadMeshPoints = scope.async {
         val initialMeshPoints = repository.getMeshPoints().first()
@@ -121,7 +124,7 @@ class AppConfiguration(
             initialMeshPoints.toOffsetGrid()
         }
 
-        meshPointsMutex.withLock {
+        withContext(Dispatchers.Main) {
             meshPoints.clear()
             meshPoints.addAll(loadedPoints)
         }
@@ -132,6 +135,9 @@ class AppConfiguration(
 
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
+
+    /** Bumped by every grid request and undo/redo, so only the latest regeneration applies. */
+    private val gridGeneration = AtomicInteger()
 
     private val history = EditHistory<EditSnapshot>()
     val canUndo = history.canUndo
@@ -193,14 +199,15 @@ class AppConfiguration(
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) = recordEdit {
+    // The undo step for a resize is recorded when the new grid arrives; see generateMeshPoints.
+    fun updateTotalRows(rows: Int) {
         meshState.update {
             it.copy(rows = rows.coerceIn(2, 10))
         }
         generateMeshPoints()
     }
 
-    fun updateTotalCols(cols: Int) = recordEdit {
+    fun updateTotalCols(cols: Int) {
         meshState.update {
             it.copy(cols = cols.coerceIn(2, 10))
         }
@@ -213,6 +220,7 @@ class AppConfiguration(
 
     private fun generateMeshPoints() {
         val requestedMeshState = meshState.value
+        val generation = gridGeneration.incrementAndGet()
         val previousJob = generateMeshPointsJob
         generateMeshPointsJob = scope.async {
             loadMeshPoints.await()
@@ -223,9 +231,13 @@ class AppConfiguration(
                 colorIds = allColors.map(SavedColor::uid),
             )
 
-            meshPointsMutex.withLock {
+            withContext(Dispatchers.Main) {
+                // A newer resize or an undo since this request supersedes it.
+                if (generation != gridGeneration.get()) return@withContext
+                val before = snapshot()
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
+                if (snapshot() != before) history.record(before, group = null)
             }
         }
         previousJob?.cancel()
@@ -266,19 +278,26 @@ class AppConfiguration(
             if (pendingGeneration === generateMeshPointsJob) break
         }
 
-        meshPointsMutex.withLock {
-            val points = meshPoints.toSavedMeshPoints()
-            println("Saved: $points")
-            repository.saveMeshPoints(points)
-        }
+        // toList() takes an immutable copy, so a concurrent UI edit can't break the iteration.
+        val points = meshPoints.toList().toSavedMeshPoints()
+        println("Saved: $points")
+        repository.saveMeshPoints(points)
     }
 
     /**
-     * Makes points that used a deleted palette color transparent. Palette deletion is not undoable,
-     * so this rewrites history too rather than letting undo bring back the deleted ID.
+     * Makes points that used a deleted palette color transparent, and resets the canvas background
+     * to the default if it used the color. Palette deletion is not undoable, so this rewrites history
+     * too rather than letting undo bring back the deleted ID.
      */
     fun removeColorFromMeshPoints(colorToRemove: Long) {
-        history.replaceAll { it.copy(points = it.points.replaceColor(colorToRemove, replacementColorId = -1L)) }
+        fun Long.withoutDeletedColor() = if (this == colorToRemove) -1L else this
+        history.replaceAll {
+            it.copy(
+                points = it.points.replaceColor(colorToRemove, replacementColorId = -1L),
+                canvasBackgroundColor = it.canvasBackgroundColor.withoutDeletedColor(),
+            )
+        }
+        canvasBackgroundColor.update { it.withoutDeletedColor() }
         val updatedPoints = meshPoints.replaceColor(
             colorId = colorToRemove,
             replacementColorId = -1L,
@@ -348,21 +367,19 @@ class AppConfiguration(
         canvasBackgroundColor = canvasBackgroundColor.value,
     )
 
-    private fun requestedGrid() = meshState.value.let { it.rows to it.cols }
-
     /** Runs [edit] and adds an undo step if it changed anything. */
     private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
         // Before the saved mesh loads there is nothing to go back to.
         if (meshPoints.isEmpty()) return edit()
 
         val before = snapshot()
-        val gridBefore = requestedGrid()
         edit()
-        if (snapshot() != before || requestedGrid() != gridBefore) history.record(before, group)
+        if (snapshot() != before) history.record(before, group)
     }
 
     private fun restore(snapshot: EditSnapshot) {
         // A pending grid regeneration would overwrite the restored points.
+        gridGeneration.incrementAndGet()
         val pendingGeneration = generateMeshPointsJob
         generateMeshPointsJob = null
         pendingGeneration?.cancel()

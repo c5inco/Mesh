@@ -200,6 +200,62 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `quick resizes before the grid arrives make one undo step`() = runBlocking {
+        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
+        val configuration = AppConfiguration(repository)
+        configuration.saveMeshPoints() // Waits for the initial grid to load.
+
+        configuration.updateTotalRows(4)
+        configuration.updateTotalRows(5)
+        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
+        configuration.saveMeshPoints() // Waits for the new grid.
+        assertEquals(5, configuration.meshPoints.size)
+
+        configuration.undo()
+        assertEquals(3, configuration.meshPoints.size)
+        assertFalse(configuration.canUndo.value)
+
+        configuration.redo()
+        assertEquals(5, configuration.meshPoints.size)
+        assertEquals(5, configuration.meshState.value.rows)
+    }
+
+    @Test
+    fun `a regeneration that finishes after undo does not overwrite the undone state`() = runBlocking {
+        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
+        val configuration = AppConfiguration(repository)
+        configuration.saveMeshPoints()
+        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
+
+        configuration.updateTotalRows(5) // Waits for colors.
+        configuration.undo()
+        repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
+        configuration.saveMeshPoints()
+
+        assertEquals(3, configuration.meshPoints.size)
+        assertEquals(3, configuration.meshState.value.rows)
+        assertEquals(Offset(0.33f, 0.8f) to 2L, configuration.meshPoints[1][1])
+        configuration.redo()
+        assertEquals(Offset(0.2f, 0.5f) to 3L, configuration.meshPoints[1][1])
+        assertEquals(3, configuration.meshPoints.size)
+    }
+
+    @Test
+    fun `deleting the background color resets the background, also in history`() = runBlocking {
+        val configuration = loadedConfiguration()
+        configuration.updateCanvasBackgroundColor(2L)
+        configuration.updateBlurLevel(0.5f)
+
+        configuration.removeColorFromMeshPoints(2L)
+        assertEquals(-1L, configuration.canvasBackgroundColor.value)
+
+        configuration.undo()
+        assertEquals(-1L, configuration.canvasBackgroundColor.value)
+        configuration.redo()
+        assertEquals(-1L, configuration.canvasBackgroundColor.value)
+    }
+
+    @Test
     fun `undo does not bring back a deleted palette color`() = runBlocking {
         val configuration = loadedConfiguration()
         configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 2L)
