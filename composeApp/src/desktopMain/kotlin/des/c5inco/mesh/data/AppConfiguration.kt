@@ -64,6 +64,15 @@ private val defaultColorPoints = listOf(
     )
 )
 
+/** The parts of the document that undo and redo restore. */
+private data class EditSnapshot(
+    val points: List<List<Pair<Offset, Long>>>,
+    val rows: Int,
+    val cols: Int,
+    val blurLevel: Float,
+    val canvasBackgroundColor: Long,
+)
+
 class AppConfiguration(
     private val repository: DataRepository,
     showPoints: Boolean = false,
@@ -120,6 +129,10 @@ class AppConfiguration(
     @Volatile
     private var generateMeshPointsJob: Deferred<Unit>? = null
 
+    private val history = EditHistory<EditSnapshot>()
+    val canUndo = history.canUndo
+    val canRedo = history.canRedo
+
     val uiState = MutableStateFlow(
         AppUiState(
             showPoints = showPoints,
@@ -165,7 +178,7 @@ class AppConfiguration(
         }
     }
 
-    fun updateBlurLevel(level: Float) {
+    fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
         meshState.update {
             it.copy(
                 blurLevel = level
@@ -173,18 +186,18 @@ class AppConfiguration(
         }
     }
 
-    fun updateCanvasBackgroundColor(color: Long) {
+    fun updateCanvasBackgroundColor(color: Long) = recordEdit {
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) {
+    fun updateTotalRows(rows: Int) = recordEdit {
         meshState.update {
             it.copy(rows = rows.coerceIn(2, 10))
         }
         generateMeshPoints()
     }
 
-    fun updateTotalCols(cols: Int) {
+    fun updateTotalCols(cols: Int) = recordEdit {
         meshState.update {
             it.copy(cols = cols.coerceIn(2, 10))
         }
@@ -215,7 +228,7 @@ class AppConfiguration(
         previousJob?.cancel()
     }
 
-    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) {
+    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) = recordEdit(group = "point $row,$col") {
         val updatedPoints = meshPoints.withUpdatedMeshPoint(
             row = row,
             col = col,
@@ -225,7 +238,7 @@ class AppConfiguration(
         meshPoints[row] = updatedPoints[row]
     }
 
-    fun distributeMeshPointsEvenly() {
+    fun distributeMeshPointsEvenly() = recordEdit {
         val currentMeshState = meshState.value
         val newPoints = meshPoints.distributedEvenly(
             rows = currentMeshState.rows,
@@ -257,7 +270,7 @@ class AppConfiguration(
         }
     }
 
-    fun removeColorFromMeshPoints(colorToRemove: Long) {
+    fun removeColorFromMeshPoints(colorToRemove: Long) = recordEdit {
         val updatedPoints = meshPoints.replaceColor(
             colorId = colorToRemove,
             replacementColorId = -1L,
@@ -311,6 +324,43 @@ class AppConfiguration(
             clipboard.setContents(StringSelection(codeSpec.toString()), null)
             println(codeSpec.toString())
         }
+    }
+
+    fun undo() {
+        history.undo(snapshot())?.let(::restore)
+    }
+
+    fun redo() {
+        history.redo(snapshot())?.let(::restore)
+    }
+
+    private fun snapshot() = EditSnapshot(
+        points = meshPoints.toList(),
+        rows = meshState.value.rows,
+        cols = meshState.value.cols,
+        blurLevel = meshState.value.blurLevel,
+        canvasBackgroundColor = canvasBackgroundColor.value,
+    )
+
+    /** Runs [edit] and adds an undo step if it changed anything. */
+    private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
+        val before = snapshot()
+        edit()
+        if (snapshot() != before) history.record(before, group)
+    }
+
+    private fun restore(snapshot: EditSnapshot) {
+        // A pending grid regeneration would overwrite the restored points.
+        val pendingGeneration = generateMeshPointsJob
+        generateMeshPointsJob = null
+        pendingGeneration?.cancel()
+
+        meshState.update {
+            it.copy(rows = snapshot.rows, cols = snapshot.cols, blurLevel = snapshot.blurLevel)
+        }
+        canvasBackgroundColor.value = snapshot.canvasBackgroundColor
+        meshPoints.clear()
+        meshPoints.addAll(snapshot.points)
     }
 
     fun toggleShowingPoints() {
