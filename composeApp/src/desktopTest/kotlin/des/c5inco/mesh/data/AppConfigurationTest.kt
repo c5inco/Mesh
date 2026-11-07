@@ -317,8 +317,10 @@ class AppConfigurationTest {
 
     @Test
     fun `a saved grid size survives a missing points table`() = runBlocking {
+        val savedPoints = AtomicReference<List<MeshPoint>>()
         val repository = FakeDataRepository(
             meshPoints = flowOf(emptyList()),
+            onSaveMeshPoints = savedPoints::set,
             initialMeshState = MeshState(rows = 5, cols = 6),
         )
         val configuration = AppConfiguration(repository)
@@ -326,6 +328,10 @@ class AppConfigurationTest {
 
         assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
         assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
+
+        // Saved, so the next launch loads this grid instead of generating another from the palette then.
+        configuration.flushPendingSave()
+        assertEquals(30, savedPoints.get()?.size)
     }
 
     @Test
