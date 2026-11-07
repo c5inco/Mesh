@@ -73,6 +73,20 @@ class McpServerControllerTest {
         assertEquals(false, isListening(port))
     }
 
+    @Test
+    fun `closing while the server starts leaves nothing listening`() {
+        repeat(20) {
+            val port = freePort()
+            val controller = controller()
+            controller.setPort(port)
+            controller.setEnabled(true)
+            Thread.sleep(it.toLong()) // Lands the close at different points of startup.
+            controller.close()
+            Thread.sleep(200)
+            assertEquals(false, isListening(port), "Port $port still listening after close (attempt $it)")
+        }
+    }
+
     private fun controller() = McpServerController(configuration, preferences).also { controllers += it }
 
     private suspend fun McpServerController.settledStatus(): Status =

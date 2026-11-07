@@ -116,14 +116,16 @@ fun App(
             },
             onCanvasBackgroundColorChange = configuration::updateCanvasBackgroundColor,
             onAddColor = {
-                configuration.addColor(
-                    SavedColor(
-                        red = (255 * it.red).toInt(),
-                        green = (255 * it.green).toInt(),
-                        blue = (255 * it.blue).toInt(),
-                        alpha = it.alpha
+                coroutineScope.launch {
+                    configuration.addColor(
+                        SavedColor(
+                            red = (255 * it.red).toInt(),
+                            green = (255 * it.green).toInt(),
+                            blue = (255 * it.blue).toInt(),
+                            alpha = it.alpha
+                        )
                     )
-                )
+                }
             },
             onRemoveColor = {
                 configuration.removeColorFromMeshPoints(it.uid)
