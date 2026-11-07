@@ -90,6 +90,21 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `a resize made while loading can be undone back to the loaded grid`() = runBlocking {
+        val loadGate = CompletableDeferred<Unit>()
+        val configuration = AppConfiguration(FakeDataRepository(meshPoints = flow { loadGate.await(); emit(emptyList()) }))
+
+        configuration.updateTotalRows(5)
+        loadGate.complete(Unit)
+        configuration.awaitMeshLoaded()
+        assertEquals(5, configuration.meshPoints.size)
+
+        configuration.undo()
+        assertEquals(3, configuration.meshPoints.size)
+        assertEquals(3, configuration.meshState.value.rows)
+    }
+
+    @Test
     fun `resizing replaces the grid right away`() = runBlocking {
         val savedPoints = AtomicReference<List<MeshPoint>>()
         val repository = FakeDataRepository(
