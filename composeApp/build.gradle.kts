@@ -13,6 +13,8 @@ import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Properties
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
 import kotlin.io.path.listDirectoryEntries
 
 plugins {
@@ -218,21 +220,31 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
                 commandLine("hdiutil", "info", "-plist")
                 standardOutput = plist
             }
-            val json = ByteArrayOutputStream()
-            execOperations.exec {
-                commandLine("plutil", "-convert", "json", "-o", "-", "-")
-                standardInput = plist.toByteArray().inputStream()
-                standardOutput = json
+            // Read the XML plist directly: it can contain <data> values that `plutil -convert json` rejects.
+            fun Element.children() = (0 until childNodes.length).map { childNodes.item(it) }.filterIsInstance<Element>()
+            fun Element.value(): Any? = when (tagName) {
+                "dict" -> children().chunked(2).associate { (key, value) -> key.textContent to value.value() }
+                "array" -> children().map { it.value() }
+                "string" -> textContent
+                else -> null
             }
-            val images = (JsonSlurper().parseText(json.toString()) as Map<*, *>)["images"] as? List<*>
+            val documentBuilder = DocumentBuilderFactory.newInstance().apply {
+                setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            }.newDocumentBuilder()
+            val info = documentBuilder.parse(plist.toByteArray().inputStream()).documentElement.children().single().value()
+            val images = (info as? Map<*, *>)?.get("images") as? List<*>
             images.orEmpty().filterIsInstance<Map<*, *>>().forEach { image ->
                 val entities = (image["system-entities"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
                 val mountPoints = entities.mapNotNull { (it["mount-point"] as? String)?.let { path -> File(path).canonicalFile } }
                 val isThisDmg = (image["image-path"] as? String)?.let { File(it).canonicalFile } == dmg.canonicalFile
-                val device = entities.firstNotNullOfOrNull { it["dev-entry"] as? String }
+                val devices = entities.mapNotNull { it["dev-entry"] as? String }
+                // The whole-disk entry (/dev/diskN) ejects every partition of the image.
+                val device = devices.firstOrNull { Regex("/dev/disk\\d+").matches(it) } ?: devices.firstOrNull()
                 if ((isThisDmg || mountPoint.canonicalFile in mountPoints) && device != null) {
-                    val (exitCode) = run("hdiutil", "detach", device, check = false)
-                    if (exitCode != 0) {
+                    // Only this build's DMG or the task's own mount point gets here, so forcing the eject is safe.
+                    if (run("hdiutil", "detach", device, check = false).first != 0 &&
+                        run("hdiutil", "detach", "-force", device, check = false).first != 0
+                    ) {
                         throw GradleException("Could not eject $device (mounted at ${mountPoints.joinToString()}). Eject it and rerun $name.")
                     }
                 }
@@ -242,9 +254,9 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
             }
         }
 
-        // Before signing, so a stale mount cannot make codesign or the later attach fail.
-        detachMounts()
         try {
+            // Before signing, so a stale mount cannot make codesign or the later attach fail.
+            detachMounts()
             // Sign the DMG itself so the stapled DMG can be assessed by Gatekeeper without a network lookup.
             run("codesign", "--force", "--timestamp", "--sign", identity, dmg.absolutePath)
 
@@ -307,7 +319,8 @@ tasks.withType<AbstractNotarizationTask>().configureEach {
             logger.error("Moved ${dmg.name} to ${unverified.name}; do not distribute it.")
             throw failure
         }
-        detachMounts()
+        // The DMG is verified at this point; a leftover mount is ejected by the next run, so only warn.
+        runCatching { detachMounts() }.onFailure { logger.warn("Could not clean up $mountPoint: ${it.message}") }
         logger.lifecycle("Notarized, stapled, and verified ${dmg.absolutePath}")
     }
 }
