@@ -221,7 +221,7 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `a regeneration that finishes after undo does not overwrite the undone state`() = runBlocking {
+    fun `undo during a pending resize cancels the resize, not the edit before it`() = runBlocking {
         val repository = FakeDataRepository(meshPoints = flowOf(emptyList()))
         val configuration = AppConfiguration(repository)
         configuration.saveMeshPoints()
@@ -229,14 +229,15 @@ class AppConfigurationTest {
 
         configuration.updateTotalRows(5) // Waits for colors.
         configuration.undo()
+        assertEquals(3, configuration.meshState.value.rows)
         repository.setColors(listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)))
         configuration.saveMeshPoints()
 
+        // The cancelled resize never lands, and the earlier point edit is still in place and undoable.
         assertEquals(3, configuration.meshPoints.size)
-        assertEquals(3, configuration.meshState.value.rows)
-        assertEquals(Offset(0.33f, 0.8f) to 2L, configuration.meshPoints[1][1])
-        configuration.redo()
         assertEquals(Offset(0.2f, 0.5f) to 3L, configuration.meshPoints[1][1])
+        configuration.undo()
+        assertEquals(Offset(0.33f, 0.8f) to 2L, configuration.meshPoints[1][1])
         assertEquals(3, configuration.meshPoints.size)
     }
 

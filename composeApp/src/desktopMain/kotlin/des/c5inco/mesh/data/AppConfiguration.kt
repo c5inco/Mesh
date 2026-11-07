@@ -354,7 +354,22 @@ class AppConfiguration(
     }
 
     fun undo() {
+        if (cancelPendingResize()) return
         history.undo(snapshot())?.let(::restore)
+    }
+
+    /**
+     * A resize becomes an undo step only when its grid arrives. Before that it is still the most
+     * recent edit, so undo cancels it instead of undoing the edit before it. It can't be redone.
+     */
+    private fun cancelPendingResize(): Boolean {
+        val pending = generateMeshPointsJob ?: return false
+        if (pending.isCompleted || meshPoints.isEmpty()) return false
+        gridGeneration.incrementAndGet()
+        generateMeshPointsJob = null
+        pending.cancel()
+        meshState.update { it.copy(rows = meshPoints.size, cols = meshPoints[0].size) }
+        return true
     }
 
     fun redo() {
