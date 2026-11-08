@@ -20,7 +20,6 @@ import io.modelcontextprotocol.kotlin.sdk.types.ImageContent
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -37,13 +36,13 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayInputStream
+import java.io.File
 import javax.imageio.ImageIO
 import kotlin.io.encoding.Base64
 
 class MeshMcpServerTest {
     // The default 3×4 grid colors its rows with IDs 1, 2, and 3.
     private val repository = FakeDataRepository(
-        meshPoints = flowOf(emptyList()),
         initialColors = listOf(
             SavedColor(uid = 1, red = 255, green = 0, blue = 0),
             SavedColor(uid = 2, red = 0, green = 255, blue = 0),
@@ -58,7 +57,7 @@ class MeshMcpServerTest {
 
     @BeforeEach
     fun connect() = runBlocking {
-        configuration.saveMeshPoints() // Waits for the initial grid to load.
+        configuration.awaitMeshLoaded()
         server = MeshMcpServer(configuration).start(port = 0)
         port = server.engine.resolvedConnectors().first().port
         client.connect(httpClient.mcpStreamableHttpTransport("http://127.0.0.1:$port/mcp"))
@@ -110,7 +109,11 @@ class MeshMcpServerTest {
 
     @Test
     fun `update_point moves a point whose color was deleted without recoloring it`() = runBlocking {
-        withContext(Dispatchers.Main) { configuration.removeColorFromMeshPoints(2L) }
+        withContext(Dispatchers.Main) {
+            val colorId = configuration.addColor(SavedColor(red = 1, green = 2, blue = 3))
+            configuration.updateMeshPoint(1, 1, configuration.meshPoints[1][1].first to colorId)
+            configuration.deleteColor(configuration.customColors.value.single())
+        }
 
         callOk("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.4))
         callOk("update_point", mapOf("row" to 1, "col" to 1, "y" to 0.6, "colorId" to -1))
@@ -157,6 +160,18 @@ class MeshMcpServerTest {
         val color = getMesh()["colors"]!!.jsonArray.map { it.jsonObject }.single { it["id"]!!.jsonPrimitive.long == colorId }
         assertEquals("#FFFF6A00", color["hex"]!!.jsonPrimitive.content)
         assertEquals(colorId, configuration.meshPoints[1][1].second)
+    }
+
+    @Test
+    fun `get_mesh names the open document and follows it to its file`() = runBlocking {
+        assertEquals("Untitled", getMesh()["document"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+
+        val file = File(repository.documentsDirectory, "Agent.mesh")
+        assertTrue(configuration.saveDocument(file))
+
+        val document = getMesh()["document"]!!.jsonObject
+        assertEquals("Agent", document["name"]!!.jsonPrimitive.content)
+        assertEquals(file.absolutePath, document["file"]!!.jsonPrimitive.content)
     }
 
     @Test

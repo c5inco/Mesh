@@ -2,8 +2,9 @@ package data
 
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.flow.Flow
-import model.MeshPoint
+import kotlinx.serialization.Serializable
 import model.SavedColor
+import java.io.File
 
 val defaultPresetColors = listOf(
     Color(0xff7766EE),
@@ -15,15 +16,26 @@ val defaultPresetColors = listOf(
     Color(0xFFFF00FF),
 )
 
+/** What the app reopens at launch. */
+@Serializable
+data class Session(
+    /** Path of the document that was open last, or null for an untitled one. */
+    val lastDocument: String? = null,
+)
+
 interface DataRepository {
-    fun getAllColors(): Flow<List<SavedColor>>
+    /** Where Mesh keeps documents it creates itself, such as the one migrated from the single saved mesh. */
+    val documentsDirectory: File
+
     fun getPresetColors(): Flow<List<SavedColor>>
-    fun getCustomColors(): Flow<List<SavedColor>>
-    /** Returns the new color's ID. */
-    suspend fun addColor(color: SavedColor): Long
-    fun deleteColor(color: SavedColor)
-    fun loadMeshState(): MeshState
-    fun saveMeshState(state: MeshState)
-    fun getMeshPoints(): Flow<List<MeshPoint>>
-    suspend fun saveMeshPoints(points: List<MeshPoint>)
+
+    /** The last session, or null when there is none to read, so the old mesh may still need migrating. */
+    fun loadSession(): Session?
+    fun saveSession(session: Session)
+
+    /** The canvas settings of the mesh saved before documents existed, or the defaults. Reads only a small file. */
+    fun loadLegacyMeshState(): MeshState
+
+    /** The mesh and custom colors saved before documents existed, or null when there are none. */
+    suspend fun loadLegacyMesh(): MeshDocument?
 }

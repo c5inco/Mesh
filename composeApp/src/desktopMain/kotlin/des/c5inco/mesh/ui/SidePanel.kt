@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -98,6 +99,12 @@ import java.awt.datatransfer.StringSelection
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun SidePanel(
+    documentName: String,
+    documentModified: Boolean,
+    onNewDocument: () -> Unit = {},
+    onOpenDocument: () -> Unit = {},
+    onSaveDocument: () -> Unit = {},
+    onSaveDocumentAs: () -> Unit = {},
     exportScale: Int,
     presetColors: List<SavedColor> = emptyList(),
     customColors: List<SavedColor> = emptyList(),
@@ -143,6 +150,21 @@ fun SidePanel(
             .background(JewelTheme.globalColors.panelBackground),
     ) {
         Column {
+            DocumentSection(
+                name = documentName,
+                modified = documentModified,
+                onNew = onNewDocument,
+                onOpen = onOpenDocument,
+                onSave = onSaveDocument,
+                onSaveAs = onSaveDocumentAs,
+            )
+
+            Divider(
+                orientation = Orientation.Horizontal,
+                thickness = 1.dp,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Column(
                 modifier = Modifier.padding(16.dp),
             ) {
@@ -525,6 +547,43 @@ private class SwatchPopupPositionProvider(private val gapPx: Int) : PopupPositio
             (anchorBounds.top - gapPx - popupContentSize.height).coerceAtLeast(0)
         }
         return IntOffset(x, y)
+    }
+}
+
+@Composable
+private fun DocumentSection(
+    name: String,
+    modified: Boolean,
+    onNew: () -> Unit,
+    onOpen: () -> Unit,
+    onSave: () -> Unit,
+    onSaveAs: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = name,
+                style = JewelTheme.typography.h4TextStyle,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .testTag(MeshTestTags.DOCUMENT_NAME),
+            )
+            if (modified) {
+                Spacer(Modifier.width(8.dp))
+                Text("Edited", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Link("New", onClick = onNew, modifier = Modifier.testTag(MeshTestTags.NEW_DOCUMENT))
+            Link("Open…", onClick = onOpen)
+            Link("Save", onClick = onSave)
+            Link("Save As…", onClick = onSaveAs)
+        }
     }
 }
 

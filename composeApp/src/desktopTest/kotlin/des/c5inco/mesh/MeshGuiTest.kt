@@ -11,8 +11,13 @@ import des.c5inco.mesh.testing.waitForClipboardText
 import des.c5inco.mesh.testing.waitForTestTag
 import des.c5inco.mesh.testing.waitForText
 import java.awt.GraphicsEnvironment
+import java.awt.event.KeyEvent
+import javax.swing.JFrame
+import javax.swing.JMenuItem
+import javax.swing.SwingUtilities
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -60,6 +65,9 @@ class MeshGuiTest {
 
             val rowsInput = waitForTestTag(MeshTestTags.ROWS_INPUT)
             assertTrue(rowsInput.editableText == "3", "Rows input should default to 3")
+
+            assertEquals("Untitled", waitForTestTag(MeshTestTags.DOCUMENT_NAME).text)
+            assertEquals("Untitled", fixture.windowTitle, "Showing the document should not edit it")
 
             val showPoints = waitForTestTag(MeshTestTags.SHOW_POINTS)
             assertFalse(showPoints.isSelected, "Show points should start unchecked")
@@ -194,6 +202,63 @@ class MeshGuiTest {
             eventually(description = "custom color 0000FF to be deleted") {
                 if (findOneByTestTag(MeshTestTags.customColor("0000FF")) == null) Unit else null
             }
+        }
+    }
+
+    @Test
+    @Order(9)
+    fun `a new document asks before discarding unsaved changes`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            waitForVisualIdle()
+            assertEquals("Untitled — Edited", fixture.windowTitle)
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.NEW_DOCUMENT))
+            waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
+            waitForText("Save changes to “Untitled”?")
+            performSemanticsClick(waitForText("Don’t Save"))
+            waitForVisualIdle()
+
+            eventually(description = "the new document's default grid") {
+                findOneByTestTag(MeshTestTags.ROWS_INPUT)?.takeIf { it.editableText == "3" }
+            }
+            eventually(description = "an unedited window title") {
+                fixture.windowTitle.takeIf { it == "Untitled" }
+            }
+
+            openPointColorDropdown(row = 0, col = 0)
+            assertNull(findOneByText("FF0000"), "Custom colors belong to the discarded document")
+            pressKey(KeyEvent.VK_ESCAPE)
+            waitForVisualIdle()
+        }
+    }
+
+    @Test
+    @Order(10)
+    fun `a document shortcut commits the field being edited first`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            waitForVisualIdle()
+            assertEquals("Untitled", fixture.windowTitle)
+
+            // Type a new row count without pressing Enter, then press New.
+            clearAndTypeText(waitForTestTag(MeshTestTags.ROWS_INPUT), "5")
+            if (System.getProperty("os.name").lowercase().contains("mac")) {
+                // On macOS the File menu owns ⌘N, and synthetic key events don't reach menus,
+                // so pick the menu item that the shortcut picks.
+                SwingUtilities.invokeAndWait {
+                    val file = (fixture.window as JFrame).jMenuBar.getMenu(0)
+                    file.menuComponents.filterIsInstance<JMenuItem>().first { it.text == "New" }.doClick()
+                }
+            } else {
+                pressKey(KeyEvent.VK_N, KeyEvent.CTRL_DOWN_MASK)
+            }
+            waitForVisualIdle()
+
+            waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
+            waitForText("Row 5")
+            performSemanticsClick(waitForText("Don’t Save"))
+            waitForVisualIdle()
         }
     }
 }

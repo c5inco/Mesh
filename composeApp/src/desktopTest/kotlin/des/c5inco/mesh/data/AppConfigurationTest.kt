@@ -1,42 +1,53 @@
 package des.c5inco.mesh.data
 
+import androidx.compose.ui.geometry.Offset
+import data.DocumentColor
+import data.MeshDocument
 import data.MeshState
+import data.Session
+import data.TRANSPARENT_COLOR_ID
+import data.meshDocumentOf
 import des.c5inco.mesh.testing.FakeDataRepository
+import des.c5inco.mesh.testing.fakePresetColors
 import des.c5inco.mesh.testing.waitForClipboardText
-import java.awt.GraphicsEnvironment
-import java.awt.Toolkit
-import java.awt.datatransfer.StringSelection
-import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
-import androidx.compose.ui.geometry.Offset
-import model.MeshPoint
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import model.SavedColor
+import model.defaultMeshPointGrid
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.awt.GraphicsEnvironment
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
+import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class AppConfigurationTest {
+    @TempDir
+    lateinit var directory: File
+
+    private val documentFile get() = File(directory, "Test.mesh")
+
     @Test
     fun `code export includes the current rounded blur and a usable paint modifier`() = runBlocking {
         assumeFalse(GraphicsEnvironment.isHeadless(), "Needs a system clipboard")
         val repository = FakeDataRepository(
-            meshPoints = flowOf(emptyList()),
-            initialColors = (1L..3L).map { SavedColor(uid = it, red = (it * 70).toInt(), green = 150, blue = 200) },
-            onSaveMeshPoints = {},
+            initialColors = (1L..3L).map { SavedColor(uid = it, red = (it * 70).toInt(), green = 150, blue = 200, preset = true) },
+            documentsDirectory = directory,
         )
         val configuration = AppConfiguration(repository)
         val clipboard = Toolkit.getDefaultToolkit().systemClipboard
@@ -64,78 +75,49 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `saving waits for initial mesh loading and preserves the default grid`() = runBlocking {
-        val loadGate = CompletableDeferred<Unit>()
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flow {
-                loadGate.await()
-                emit(emptyList())
-            },
-            onSaveMeshPoints = savedPoints::set,
+    fun `saving waits for the startup document and keeps the default grid`() = runBlocking {
+        val presetsGate = CompletableDeferred<Unit>()
+        val configuration = AppConfiguration(
+            FakeDataRepository(presetColors = flow { presetsGate.await(); emit(fakePresetColors) }, documentsDirectory = directory)
         )
-        val configuration = AppConfiguration(repository)
 
-        val save = async { configuration.saveMeshPoints() }
+        val save = async { configuration.saveDocument(documentFile) }
         assertFalse(save.isCompleted)
 
-        loadGate.complete(Unit)
-        save.await()
+        presetsGate.complete(Unit)
+        assertTrue(save.await())
 
-        assertEquals(12, savedPoints.get().size)
-        assertEquals(1L, savedPoints.get().first().savedColorId)
-        assertEquals(3L, savedPoints.get().last().savedColorId)
+        assertEquals(defaultDocument().points, saved(documentFile).points)
+        assertEquals(DocumentColor(red = 40, green = 0, blue = 0), saved(documentFile).points[0][0].color)
     }
 
     @Test
-    fun `regeneration replaces rather than appends to a delayed initial load`() = runBlocking {
-        val loadGate = CompletableDeferred<Unit>()
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flow {
-                loadGate.await()
-                emit(emptyList())
-            },
-            initialColors = listOf(SavedColor(uid = 42L, red = 1, green = 2, blue = 3)),
-            onSaveMeshPoints = savedPoints::set,
+    fun `failed startup loading prevents saving`() {
+        val configuration = AppConfiguration(
+            FakeDataRepository(presetColors = flow { throw IllegalStateException("load failed") }, documentsDirectory = directory)
         )
-        val configuration = AppConfiguration(repository)
-
-        configuration.updateTotalRows(4)
-        loadGate.complete(Unit)
-        configuration.saveMeshPoints()
-
-        assertEquals(4, configuration.meshPoints.size)
-        assertEquals(16, savedPoints.get().size)
-        assertEquals(3, savedPoints.get().maxOf(MeshPoint::row))
-    }
-
-    @Test
-    fun `failed initial loading prevents an empty save`() {
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flow { throw IllegalStateException("load failed") },
-            onSaveMeshPoints = savedPoints::set,
-        )
-        val configuration = AppConfiguration(repository)
 
         val error = assertThrows(IllegalStateException::class.java) {
-            runBlocking { configuration.saveMeshPoints() }
+            runBlocking { configuration.saveDocument(documentFile) }
         }
 
         assertEquals("load failed", error.message)
-        assertNull(savedPoints.get())
+        assertFalse(documentFile.exists())
     }
 
     @Test
-    fun `a resize made while loading can be undone back to the loaded grid`() = runBlocking {
-        val loadGate = CompletableDeferred<Unit>()
-        val configuration = AppConfiguration(FakeDataRepository(meshPoints = flow { loadGate.await(); emit(emptyList()) }))
+    fun `a resize made while loading applies on load and can be undone back to the loaded grid`() = runBlocking {
+        val presetsGate = CompletableDeferred<Unit>()
+        val configuration = AppConfiguration(
+            FakeDataRepository(presetColors = flow { presetsGate.await(); emit(fakePresetColors) }, documentsDirectory = directory)
+        )
 
         configuration.updateTotalRows(5)
-        loadGate.complete(Unit)
+        presetsGate.complete(Unit)
         configuration.awaitMeshLoaded()
         assertEquals(5, configuration.meshPoints.size)
+        assertEquals(5, configuration.meshState.value.rows)
+        assertTrue(configuration.document.value.modified)
 
         configuration.undo()
         assertEquals(3, configuration.meshPoints.size)
@@ -144,22 +126,15 @@ class AppConfigurationTest {
 
     @Test
     fun `resizing replaces the grid right away`() = runBlocking {
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flowOf(emptyList()),
-            onSaveMeshPoints = savedPoints::set,
-        )
-        val configuration = AppConfiguration(repository)
-        configuration.awaitMeshLoaded()
+        val configuration = loadedConfiguration()
 
         configuration.updateTotalRows(4)
         configuration.updateTotalCols(5)
         assertEquals(List(4) { 5 }, configuration.meshPoints.map { it.size })
 
-        configuration.saveMeshPoints()
-        assertEquals(20, savedPoints.get().size)
-        assertEquals(3, savedPoints.get().maxOf(MeshPoint::row))
-        assertEquals(4, savedPoints.get().maxOf(MeshPoint::col))
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(List(4) { 5 }, saved(documentFile).points.map { it.size })
+        assertEquals(4 to 5, saved(documentFile).meshState.let { it.rows to it.cols })
     }
 
     @Test
@@ -186,13 +161,15 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `edits that change nothing add no undo step`() = runBlocking {
+    fun `edits that change nothing add no undo step and leave the document unedited`() = runBlocking {
         val configuration = loadedConfiguration()
 
         configuration.updateMeshPoint(1, 1, configuration.meshPoints[1][1])
         configuration.updateBlurLevel(configuration.meshState.value.blurLevel)
+        configuration.updateMeasuredCanvasSize(640, 480)
 
         assertFalse(configuration.canUndo.value)
+        assertFalse(configuration.document.value.modified, "Following the window and unchanged values aren't edits")
     }
 
     @Test
@@ -249,31 +226,21 @@ class AppConfigurationTest {
     }
 
     @Test
-    fun `deleting the background color resets the background, also in history`() = runBlocking {
+    fun `deleting a custom color clears its points and the background, and undo brings them back`() = runBlocking {
         val configuration = loadedConfiguration()
-        configuration.updateCanvasBackgroundColor(2L)
-        configuration.updateBlurLevel(0.5f)
+        val red = configuration.addColor(SavedColor(red = 255, green = 0, blue = 0))
+        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to red)
+        configuration.updateCanvasBackgroundColor(red)
 
-        configuration.removeColorFromMeshPoints(2L)
-        assertEquals(-1L, configuration.canvasBackgroundColor.value)
+        configuration.deleteColor(configuration.customColors.value.single())
+        assertEquals(emptyList<SavedColor>(), configuration.customColors.value)
+        assertEquals(Offset(0.2f, 0.5f) to TRANSPARENT_COLOR_ID, configuration.meshPoints[1][1])
+        assertEquals(TRANSPARENT_COLOR_ID, configuration.canvasBackgroundColor.value)
 
         configuration.undo()
-        assertEquals(-1L, configuration.canvasBackgroundColor.value)
-        configuration.redo()
-        assertEquals(-1L, configuration.canvasBackgroundColor.value)
-    }
-
-    @Test
-    fun `undo does not bring back a deleted palette color`() = runBlocking {
-        val configuration = loadedConfiguration()
-        configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 2L)
-
-        configuration.removeColorFromMeshPoints(2L)
-        configuration.undo()
-
-        assertEquals(Offset(0.33f, 0.8f) to -1L, configuration.meshPoints[1][1])
-        assertTrue(configuration.meshPoints.flatten().none { it.second == 2L })
-        assertFalse(configuration.canUndo.value)
+        assertEquals(listOf(red), configuration.customColors.value.map(SavedColor::uid))
+        assertEquals(Offset(0.2f, 0.5f) to red, configuration.meshPoints[1][1])
+        assertEquals(red, configuration.canvasBackgroundColor.value)
     }
 
     @Test
@@ -287,135 +254,341 @@ class AppConfigurationTest {
 
         assertFalse(configuration.canRedo.value)
         configuration.redo()
-        assertEquals(-1L, configuration.canvasBackgroundColor.value)
+        assertEquals(TRANSPARENT_COLOR_ID, configuration.canvasBackgroundColor.value)
     }
 
     @Test
-    fun `edits are saved without waiting for the app to quit`() = runBlocking {
-        val saves = Channel<List<MeshPoint>>(Channel.UNLIMITED)
-        val configuration = loadedConfiguration(onSaveMeshPoints = { saves.trySend(it) })
+    fun `edits to a document with a file are saved to it without waiting for the app to quit`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
 
         configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
         configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
+        assertTrue(configuration.document.value.modified)
 
-        val saved = withTimeout(5.seconds) { saves.receive() }
-        assertEquals(MeshPoint(row = 1, col = 1, x = 0.3f, y = 0.6f, savedColorId = 3L), saved.single { it.row == 1 && it.col == 1 })
-        delay(1.5.seconds)
-        assertTrue(saves.isEmpty, "Rapid edits should save once")
+        eventually { saved(documentFile).points[1][1].takeIf { it.x == 0.3f && it.y == 0.6f } }
+        eventually { configuration.document.value.takeIf { !it.modified } }
+        assertEquals(DocumentColor(red = 120, green = 0, blue = 0), saved(documentFile).points[1][1].color)
+    }
+
+    @Test
+    fun `an untitled document is never autosaved`() = runBlocking {
+        val configuration = loadedConfiguration()
+
+        configuration.updateBlurLevel(0.5f)
+        delay(2.seconds)
+        configuration.flushPendingSave()
+
+        assertEquals(emptyList<String>(), directory.list()!!.toList())
+        assertTrue(configuration.document.value.modified)
     }
 
     @Test
     fun `the exit save writes a grid size that matches the saved points`() = runBlocking {
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(meshPoints = flowOf(emptyList()), onSaveMeshPoints = savedPoints::set)
-        val configuration = AppConfiguration(repository)
-        configuration.awaitMeshLoaded()
+        val configuration = openedConfiguration(writeDocument(documentFile))
         configuration.updateMeshPoint(1, 1, Offset(0.2f, 0.5f) to 3L)
 
         configuration.updateTotalRows(5)
         configuration.flushPendingSave()
 
-        assertEquals(5, repository.savedMeshState?.rows)
-        assertEquals(4, savedPoints.get().maxOf(MeshPoint::row))
+        assertEquals(5, saved(documentFile).meshState.rows)
+        assertEquals(5, saved(documentFile).points.size)
     }
 
     @Test
     fun `a failed autosave is retried`() = runBlocking {
-        val saves = Channel<List<MeshPoint>>(Channel.UNLIMITED)
-        var failNext = false
-        val configuration = loadedConfiguration(onSaveMeshPoints = {
-            if (failNext) {
-                failNext = false
-                error("disk full")
-            }
-            saves.trySend(it)
-        })
+        val configuration = openedConfiguration(writeDocument(documentFile))
 
-        failNext = true
-        configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
-
-        val saved = withTimeout(10.seconds) { saves.receive() }
-        assertEquals(0.3f, saved.single { it.row == 1 && it.col == 1 }.x)
-    }
-
-    @Test
-    fun `a saved grid size that doesn't match the saved points is repaired on load`() = runBlocking {
-        // The state file says 3×4 (the default), but the points table holds a 2×2 grid.
-        val twoByTwo = listOf(0 to 0, 0 to 1, 1 to 0, 1 to 1).map { (row, col) ->
-            MeshPoint(row = row, col = col, x = col.toFloat(), y = row.toFloat(), savedColorId = 1L)
+        directory.setWritable(false)
+        try {
+            configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
+            delay(1500.milliseconds) // The first attempt fails after about a second.
+        } finally {
+            directory.setWritable(true)
         }
-        val repository = FakeDataRepository(meshPoints = flowOf(twoByTwo))
-        val configuration = AppConfiguration(repository)
-        configuration.awaitMeshLoaded()
 
-        assertEquals(2 to 2, configuration.meshState.value.let { it.rows to it.cols })
-        configuration.flushPendingSave()
-        assertEquals(2 to 2, repository.savedMeshState?.let { it.rows to it.cols })
+        val point = eventually { saved(documentFile).points[1][1].takeIf { it.x == 0.3f } }
+        assertEquals(0.3f, point.x)
     }
 
     @Test
-    fun `a saved grid size survives a missing points table`() = runBlocking {
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flowOf(emptyList()),
-            onSaveMeshPoints = savedPoints::set,
-            initialMeshState = MeshState(rows = 5, cols = 6),
-        )
-        val configuration = AppConfiguration(repository)
-        configuration.awaitMeshLoaded()
+    fun `a document's grid size follows its points when it opens`() = runBlocking {
+        // The file says 5×6, but holds a 3×4 grid.
+        val configuration = openedConfiguration(writeDocument(documentFile, MeshState(rows = 5, cols = 6)))
 
-        assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
-        assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
-
-        // Saved, so the next launch loads this grid instead of generating another from the palette then.
-        configuration.flushPendingSave()
-        assertEquals(30, savedPoints.get()?.size)
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertFalse(configuration.document.value.modified, "Reading a file isn't an edit")
     }
 
     @Test
     fun `a grid regenerated by a resize while loading is saved, even back at the saved size`() = runBlocking {
-        // An interrupted save left the state file at 5 rows but the points table at 3.
-        val threeByFour = (0 until 3).flatMap { row ->
-            (0 until 4).map { col -> MeshPoint(row = row, col = col, x = col / 3f, y = row / 2f, savedColorId = 1L) }
-        }
-        val loadGate = CompletableDeferred<Unit>()
-        val savedPoints = AtomicReference<List<MeshPoint>>()
-        val repository = FakeDataRepository(
-            meshPoints = flow { loadGate.await(); emit(threeByFour) },
-            onSaveMeshPoints = savedPoints::set,
-            initialMeshState = MeshState(rows = 5, cols = 4),
+        val presetsGate = CompletableDeferred<Unit>()
+        // An older save left the grid size at 5 rows, but the points at 3.
+        val file = writeDocument(documentFile, MeshState(rows = 5, cols = 4))
+        val configuration = AppConfiguration(
+            FakeDataRepository(
+                presetColors = flow { presetsGate.await(); emit(fakePresetColors) },
+                documentsDirectory = directory,
+                session = Session(lastDocument = file.absolutePath),
+            )
         )
-        val configuration = AppConfiguration(repository)
 
         configuration.updateTotalRows(6)
         configuration.updateTotalRows(5)
-        loadGate.complete(Unit)
+        presetsGate.complete(Unit)
         configuration.awaitMeshLoaded()
         configuration.flushPendingSave()
 
         assertEquals(5, configuration.meshPoints.size)
-        assertEquals(20, savedPoints.get()?.size)
+        assertEquals(List(5) { 4 }, saved(file).points.map { it.size })
     }
 
     @Test
-    fun `an edit made while the mesh loads is saved`() = runBlocking {
-        val loadGate = CompletableDeferred<Unit>()
-        val repository = FakeDataRepository(meshPoints = flow { loadGate.await(); emit(emptyList()) })
-        val configuration = AppConfiguration(repository)
+    fun `an edit made while the document loads is kept and saved`() = runBlocking {
+        val presetsGate = CompletableDeferred<Unit>()
+        val file = writeDocument(documentFile)
+        val configuration = AppConfiguration(
+            FakeDataRepository(
+                presetColors = flow { presetsGate.await(); emit(fakePresetColors) },
+                documentsDirectory = directory,
+                session = Session(lastDocument = file.absolutePath),
+            )
+        )
 
         withContext(Dispatchers.Main) { configuration.updateBlurLevel(0.5f) }
-        loadGate.complete(Unit)
+        presetsGate.complete(Unit)
         configuration.awaitMeshLoaded()
         configuration.flushPendingSave()
 
-        assertEquals(0.5f, repository.savedMeshState?.blurLevel)
+        assertEquals(0.5f, configuration.meshState.value.blurLevel)
+        assertEquals(0.5f, saved(file).meshState.blurLevel)
     }
 
-    private suspend fun loadedConfiguration(onSaveMeshPoints: (List<MeshPoint>) -> Unit = {}) = AppConfiguration(
-        FakeDataRepository(
-            meshPoints = flowOf(emptyList()),
-            initialColors = listOf(SavedColor(uid = 1L, red = 1, green = 2, blue = 3)),
-            onSaveMeshPoints = onSaveMeshPoints,
-        )
-    ).also { it.awaitMeshLoaded() }
+    @Test
+    fun `a document keeps its colors on a machine whose presets have other IDs`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val red = configuration.addColor(SavedColor(red = 255, green = 0, blue = 0, alpha = 0.5f))
+        configuration.updateMeshPoint(0, 0, Offset(0f, 0f) to red)
+        configuration.updateMeshPoint(1, 1, Offset(0.25f, 0.5f) to 3L)
+        configuration.updateCanvasBackgroundColor(red)
+        assertTrue(configuration.saveDocument(documentFile))
+
+        val otherPresets = fakePresetColors.map { it.copy(uid = it.uid + 100) }
+        val elsewhere = loadedConfiguration(FakeDataRepository(initialColors = otherPresets, documentsDirectory = directory))
+        assertEquals(DocumentChange.Done, elsewhere.openDocument(documentFile))
+
+        val customColor = elsewhere.customColors.value.single()
+        assertEquals(listOf(255, 0, 0, 0.5f), listOf(customColor.red, customColor.green, customColor.blue, customColor.alpha))
+        assertEquals(customColor.uid, elsewhere.meshPoints[0][0].second)
+        assertEquals(customColor.uid, elsewhere.canvasBackgroundColor.value)
+        assertEquals(Offset(0.25f, 0.5f) to 103L, elsewhere.meshPoints[1][1])
+        assertEquals(DocumentStatus(file = documentFile, modified = false), elsewhere.document.value)
+    }
+
+    @Test
+    fun `a file from a newer version of Mesh doesn't replace the open document`() = runBlocking {
+        val configuration = loadedConfiguration()
+        // A newer format may not decode as this one at all.
+        documentFile.writeText("""{"version": ${MeshDocument.CURRENT_VERSION + 1}, "layers": []}""")
+
+        val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
+        assertTrue(error.message!!.contains("needs a newer version"), error.message)
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
+        assertEquals(DocumentStatus(), configuration.document.value)
+    }
+
+    @Test
+    fun `the first launch migrates the saved mesh to a document and later launches reopen it`() = runBlocking {
+        val legacyCustomColor = DocumentColor(red = 1, green = 2, blue = 3)
+        val legacyMesh = defaultDocument().let { mesh ->
+            mesh.copy(
+                customColors = listOf(legacyCustomColor),
+                points = mesh.points.map { row -> row.map { it.copy(color = legacyCustomColor) } },
+            )
+        }
+        val firstLaunch = FakeDataRepository(documentsDirectory = directory, session = null, legacyMesh = legacyMesh)
+        val migrated = loadedConfiguration(firstLaunch)
+        val session = firstLaunch.savedSession.first { it != null }
+
+        val migratedFile = File(directory, "My Mesh.mesh")
+        assertEquals(Session(lastDocument = migratedFile.absolutePath), session)
+        assertEquals(legacyMesh, saved(migratedFile))
+        assertEquals(DocumentStatus(file = migratedFile, modified = false), migrated.document.value)
+        val customColorId = migrated.customColors.value.single().uid
+        assertTrue(migrated.meshPoints.flatten().all { it.second == customColorId })
+
+        val nextLaunch = FakeDataRepository(documentsDirectory = directory, session = session, legacyMesh = legacyMesh)
+        val reopened = loadedConfiguration(nextLaunch)
+        assertEquals(DocumentStatus(file = migratedFile, modified = false), reopened.document.value)
+        assertEquals(listOf("My Mesh.mesh"), directory.list()!!.toList())
+    }
+
+    @Test
+    fun `saving an untitled document gives it a file and clears its edited state`() = runBlocking {
+        val configuration = loadedConfiguration()
+
+        configuration.updateBlurLevel(0.5f)
+        assertEquals(DocumentStatus(file = null, modified = true), configuration.document.value)
+
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(DocumentStatus(file = documentFile, modified = false), configuration.document.value)
+        assertEquals(0.5f, saved(documentFile).meshState.blurLevel)
+    }
+
+    @Test
+    fun `opening another document first saves the open one's last edit and starts a fresh history`() = runBlocking {
+        val first = writeDocument(documentFile)
+        val second = writeDocument(File(directory, "Second.mesh"))
+        val configuration = openedConfiguration(first)
+
+        configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
+        assertEquals(DocumentChange.Done, configuration.openDocument(second))
+
+        assertEquals(0.3f, saved(first).points[1][1].x, "The edit was still waiting for its autosave")
+        assertEquals(DocumentStatus(file = second, modified = false), configuration.document.value)
+        assertFalse(configuration.canUndo.value)
+
+        assertEquals(DocumentChange.Done, configuration.newDocument())
+        assertEquals(DocumentStatus(), configuration.document.value)
+        assertEquals(defaultDocument().points.map { it.size }, configuration.meshPoints.map { it.size })
+    }
+
+    @Test
+    fun `reopening the open document shows its last edit`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+
+        configuration.updateBlurLevel(0.5f)
+        assertEquals(DocumentChange.Done, configuration.openDocument(documentFile))
+
+        assertEquals(0.5f, configuration.meshState.value.blurLevel, "The file was read before the edit was saved to it")
+        assertEquals(0.5f, saved(documentFile).meshState.blurLevel)
+    }
+
+    @Test
+    fun `an untitled document's edits are discarded only as far as the user agreed`() = runBlocking {
+        val configuration = loadedConfiguration()
+
+        configuration.updateBlurLevel(0.5f)
+        val agreed = configuration.newDocument() as DocumentChange.UnsavedChanges
+        // Such as an agent's edit while the user answers.
+        configuration.updateBlurLevel(0.7f)
+
+        val again = configuration.newDocument(discarding = agreed.revision) as DocumentChange.UnsavedChanges
+        assertEquals(0.7f, configuration.meshState.value.blurLevel)
+        assertEquals(DocumentChange.Done, configuration.newDocument(discarding = again.revision))
+        assertEquals(DocumentStatus(), configuration.document.value)
+    }
+
+    @Test
+    fun `a failed Save As still leaves the edits its document's file is missing protected`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+        val elsewhere = File(directory, "Elsewhere").apply { mkdir() }
+
+        directory.setWritable(false)
+        try {
+            elsewhere.setWritable(false)
+            configuration.updateBlurLevel(0.5f)
+            assertFalse(configuration.saveDocument(File(elsewhere, "Copy.mesh")))
+            assertTrue(configuration.closeDocument() is DocumentChange.SaveFailed)
+            assertTrue(configuration.newDocument() is DocumentChange.SaveFailed)
+
+            // Once a copy holds the edits, the document's new file has everything and nothing is pending.
+            elsewhere.setWritable(true)
+            assertTrue(configuration.saveDocument(File(elsewhere, "Copy.mesh")))
+            assertEquals(DocumentChange.Done, configuration.closeDocument())
+            assertEquals(0.5f, saved(File(elsewhere, "Copy.mesh")).meshState.blurLevel)
+        } finally {
+            directory.setWritable(true)
+            elsewhere.setWritable(true)
+        }
+    }
+
+    @Test
+    fun `closing waits for the session to record the document's file`() = runBlocking {
+        val repository = FakeDataRepository(documentsDirectory = directory, sessionWriteDelay = 300.milliseconds)
+        val configuration = loadedConfiguration(repository)
+
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(DocumentChange.Done, configuration.closeDocument())
+
+        assertEquals(Session(lastDocument = documentFile.absolutePath), repository.savedSession.value)
+    }
+
+    @Test
+    fun `a file with a color channel out of range doesn't open`() = runBlocking {
+        val configuration = loadedConfiguration()
+        documentFile.writeText(defaultDocument().encode().replaceFirst("\"red\": 40", "\"red\": 300"))
+
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
+        assertEquals(DocumentStatus(), configuration.document.value)
+    }
+
+    @Test
+    fun `closing a document whose last edit can't be saved asks first`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+
+        directory.setWritable(false)
+        try {
+            configuration.updateBlurLevel(0.5f)
+            assertTrue(configuration.closeDocument() is DocumentChange.SaveFailed)
+            assertTrue(configuration.document.value.modified)
+        } finally {
+            directory.setWritable(true)
+        }
+
+        assertEquals(DocumentChange.Done, configuration.closeDocument())
+        assertEquals(0.5f, saved(documentFile).meshState.blurLevel)
+    }
+
+    @Test
+    fun `a launch that can't open or migrate its document leaves the session for the next launch to try again`() =
+        runBlocking {
+            val notADirectory = File(directory, "file").apply { writeText("") }
+            val failedMigration = FakeDataRepository(
+                documentsDirectory = File(notADirectory, "documents"),
+                session = null,
+                legacyMesh = defaultDocument(),
+            )
+            val migrating = loadedConfiguration(failedMigration)
+            assertEquals(DocumentStatus(file = null, modified = true), migrating.document.value)
+
+            val missingDocument = FakeDataRepository(
+                documentsDirectory = directory,
+                session = Session(lastDocument = File(directory, "Missing.mesh").absolutePath),
+            )
+            loadedConfiguration(missingDocument)
+
+            delay(500.milliseconds) // Sessions are written in the background.
+            assertEquals(null, failedMigration.savedSession.value)
+            assertEquals(null, missingDocument.savedSession.value)
+        }
+
+    private suspend fun loadedConfiguration(
+        repository: FakeDataRepository = FakeDataRepository(documentsDirectory = directory),
+    ) = AppConfiguration(repository).also { it.awaitMeshLoaded() }
+
+    private suspend fun openedConfiguration(file: File) = loadedConfiguration(
+        FakeDataRepository(documentsDirectory = directory, session = Session(lastDocument = file.absolutePath))
+    )
+
+    private fun defaultDocument() = meshDocumentOf(
+        meshState = MeshState(),
+        backgroundColorId = TRANSPARENT_COLOR_ID,
+        customColors = emptyList(),
+        points = defaultMeshPointGrid(fakePresetColors.map(SavedColor::uid)),
+        colors = fakePresetColors,
+    )
+
+    private fun writeDocument(file: File, meshState: MeshState = MeshState()) =
+        file.apply { writeText(defaultDocument().copy(meshState = meshState).encode()) }
+
+    private fun saved(file: File) = MeshDocument.decode(file.readText())
+
+    private suspend fun <T : Any> eventually(value: () -> T?): T = withTimeout(10.seconds) {
+        var result = value()
+        while (result == null) {
+            delay(50.milliseconds)
+            result = value()
+        }
+        result
+    }
 }

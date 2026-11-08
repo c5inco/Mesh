@@ -19,6 +19,7 @@ import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.Notifications
 import des.c5inco.mesh.mcp.McpServerController
 import des.c5inco.mesh.testing.MeshTestTags
+import des.c5inco.mesh.ui.DocumentActions
 import des.c5inco.mesh.ui.GradientCanvas
 import des.c5inco.mesh.ui.SidePanel
 import kotlinx.coroutines.launch
@@ -27,14 +28,16 @@ import model.SavedColor
 @Composable
 fun App(
     configuration: AppConfiguration,
+    documentActions: DocumentActions,
     mcpServer: McpServerController? = null,
 ) {
     val presetColors by configuration.presetColors.collectAsState(initial = emptyList())
-    val customColors by configuration.customColors.collectAsState(initial = emptyList())
+    val customColors by configuration.customColors.collectAsState()
     val availableColors by configuration.availableColors.collectAsState(initial = emptyList())
     val canvasBackgroundColor by configuration.canvasBackgroundColor.collectAsState()
     val uiState by configuration.uiState.collectAsState()
     val meshState by configuration.meshState.collectAsState()
+    val document by configuration.document.collectAsState()
     val mcpServerState = mcpServer?.state?.collectAsState()?.value
 
     Row(
@@ -59,10 +62,7 @@ fun App(
             canvasBackgroundColor = canvasBackgroundColor,
             meshPoints = configuration.meshPoints,
             showPoints = uiState.showPoints,
-            onResize = { width, height ->
-                configuration.updateCanvasWidth(width)
-                configuration.updateCanvasHeight(height)
-            },
+            onResize = configuration::updateMeasuredCanvasSize,
             onTogglePoints = { configuration.toggleShowingPoints() },
             onPointDragStartEnd = { selectedColorPoint = it },
             onPointDrag = { row, col, point ->
@@ -73,6 +73,12 @@ fun App(
                 .testTag(MeshTestTags.GRADIENT_CANVAS)
         )
         SidePanel(
+            documentName = document.name,
+            documentModified = document.modified,
+            onNewDocument = documentActions::new,
+            onOpenDocument = documentActions::open,
+            onSaveDocument = documentActions::save,
+            onSaveDocumentAs = documentActions::saveAs,
             exportScale = exportScale,
             presetColors = presetColors,
             customColors = customColors,
@@ -115,21 +121,16 @@ fun App(
             },
             onCanvasBackgroundColorChange = configuration::updateCanvasBackgroundColor,
             onAddColor = {
-                coroutineScope.launch {
-                    configuration.addColor(
-                        SavedColor(
-                            red = (255 * it.red).toInt(),
-                            green = (255 * it.green).toInt(),
-                            blue = (255 * it.blue).toInt(),
-                            alpha = it.alpha
-                        )
+                configuration.addColor(
+                    SavedColor(
+                        red = (255 * it.red).toInt(),
+                        green = (255 * it.green).toInt(),
+                        blue = (255 * it.blue).toInt(),
+                        alpha = it.alpha
                     )
-                }
+                )
             },
-            onRemoveColor = {
-                configuration.removeColorFromMeshPoints(it.uid)
-                configuration.deleteColor(it)
-            },
+            onRemoveColor = configuration::deleteColor,
             selectedColorPoint = selectedColorPoint,
             mcpServerState = mcpServerState,
             onMcpServerEnabledChange = { mcpServer?.setEnabled(it) },

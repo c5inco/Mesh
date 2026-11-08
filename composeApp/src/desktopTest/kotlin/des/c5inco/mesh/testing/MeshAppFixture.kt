@@ -2,22 +2,16 @@
 
 package des.c5inco.mesh.testing
 
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
+import androidx.compose.runtime.remember
 import androidx.compose.ui.window.application
-import androidx.compose.ui.window.rememberWindowState
-import des.c5inco.mesh.App
+import des.c5inco.mesh.MeshWindow
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.AppDataRepository
 import dev.sebastiano.spectre.core.ComposeAutomator
 import dev.sebastiano.spectre.core.InternalSpectreApi
 import dev.sebastiano.spectre.core.RobotDriver
 import dev.sebastiano.spectre.core.WindowTracker
-import org.jetbrains.jewel.foundation.theme.JewelTheme
-import org.jetbrains.jewel.intui.standalone.theme.IntUiTheme
-import org.jetbrains.jewel.intui.standalone.theme.darkThemeDefinition
-import org.jetbrains.jewel.intui.standalone.theme.default
-import org.jetbrains.jewel.ui.ComponentStyling
+import java.awt.Frame
 import java.awt.GraphicsEnvironment
 import java.io.File
 import java.nio.file.Files
@@ -28,7 +22,8 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class MeshAppFixture(
-    private val title: String = "Mesh",
+    /** The window's title at launch: a new home directory opens an untitled document. */
+    private val title: String = "Untitled",
     private val startupTimeout: Duration = 15.seconds,
 ) {
     private val applicationStarted = CountDownLatch(1)
@@ -40,6 +35,14 @@ class MeshAppFixture(
 
     val automator: ComposeAutomator
         get() = _automator
+
+    /** The main window. */
+    lateinit var window: Frame
+        private set
+
+    /** The main window's title, which names the open document. */
+    val windowTitle: String
+        get() = window.title
 
     fun requireDisplay() {
         check(!GraphicsEnvironment.isHeadless()) {
@@ -56,31 +59,19 @@ class MeshAppFixture(
         thread = Thread(
             {
                 application {
-                    val configuration = AppConfiguration(
-                        repository = AppDataRepository(),
-                    )
-                    val windowState = rememberWindowState(
-                        width = 1024.dp,
-                        height = 768.dp,
-                    )
+                    val configuration = remember {
+                        AppConfiguration(
+                            repository = AppDataRepository(),
+                        )
+                    }
 
                     exitFn = ::exitApplication
                     applicationStarted.countDown()
 
-                    val themeDefinition = JewelTheme.darkThemeDefinition()
-
-                    Window(
-                        state = windowState,
-                        onCloseRequest = ::exitApplication,
-                        title = title,
-                    ) {
-                        IntUiTheme(
-                            theme = themeDefinition,
-                            styling = ComponentStyling.default(),
-                        ) {
-                            App(configuration = configuration)
-                        }
-                    }
+                    MeshWindow(
+                        configuration = configuration,
+                        onExit = ::exitApplication,
+                    )
                 }
             },
             "mesh-spectre-fixture",
@@ -96,9 +87,10 @@ class MeshAppFixture(
         while (System.nanoTime() < deadline) {
             bootstrapTracker.refresh()
             val tracked = bootstrapTracker.trackedWindows.value.firstOrNull {
-                runCatching { (it.window as? java.awt.Frame)?.title }.getOrNull() == title
+                runCatching { (it.window as? Frame)?.title }.getOrNull() == title
             }
             if (tracked != null) {
+                window = tracked.window as Frame
                 _automator = ComposeAutomator.inProcess(
                     robotDriver = RobotDriver.synthetic(tracked.window),
                 )
