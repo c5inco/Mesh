@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import java.net.ConnectException
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
@@ -48,7 +49,9 @@ class McpServerControllerTest {
 
     @Test
     fun `a busy port reports a failure until the user picks a free one`() = runBlocking {
-        ServerSocket(0).use { busy ->
+        // Held on 127.0.0.1, the address the server binds: macOS lets a server bind 127.0.0.1 even
+        // while another socket holds the same port on all addresses.
+        ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).use { busy ->
             val controller = controller()
             controller.setPort(busy.localPort)
             controller.setEnabled(true)

@@ -35,6 +35,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalFocusManager
@@ -623,7 +625,8 @@ private fun ColorInput(
                 .onFocusChanged { validate() }
                 .onKeyEvent {
                     when (it.key) {
-                        Key.Enter, Key.NumPadEnter -> {
+                        // Only on key down: the key-up can reach this field before it closes and add the color again.
+                        Key.Enter, Key.NumPadEnter -> if (it.type == KeyEventType.KeyDown) {
                             isColorValid = validate()
                             if (isColorValid) onSubmit(color)
                         }
