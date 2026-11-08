@@ -49,9 +49,9 @@ class McpServerControllerTest {
 
     @Test
     fun `a busy port reports a failure until the user picks a free one`() = runBlocking {
-        // Held on the loopback address the server binds: macOS lets a server bind 127.0.0.1 even
+        // Held on 127.0.0.1, the address the server binds: macOS lets a server bind 127.0.0.1 even
         // while another socket holds the same port on all addresses.
-        ServerSocket(0, 50, InetAddress.getLoopbackAddress()).use { busy ->
+        ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).use { busy ->
             val controller = controller()
             controller.setPort(busy.localPort)
             controller.setEnabled(true)
