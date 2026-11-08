@@ -126,7 +126,8 @@ compose.desktop {
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg)
-            // From suggestRuntimeModules. Without them the packaged app fails at launch (sun/misc/Unsafe).
+            // The JDK modules the app's jars use, from suggestRuntimeModules. Rerun it after dependency
+            // upgrades: jlink otherwise bundles only the modules Compose detects on its own.
             modules("java.compiler", "java.instrument", "java.management", "java.prefs", "jdk.unsupported")
 
             packageVersion = version.toString()
