@@ -41,5 +41,6 @@ private fun shutdown(
     // Waiting on the UI thread here could hang the exit.
     runBlocking<Unit> {
         configuration.flushPendingSave()
+        configuration.flushSession()
     }
 }

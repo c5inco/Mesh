@@ -107,11 +107,12 @@ class DocumentActions(
                 DocumentChange.Done -> return true
                 DocumentChange.Failed -> return false
                 // After Save, whether it worked or not, the loop asks again until nothing would be lost.
-                DocumentChange.UnsavedChanges -> when (
+                is DocumentChange.UnsavedChanges -> when (
                     ask("Save changes to “$name”?", "Your changes will be lost if you don’t save them.", DONT_SAVE, SAVE)
                 ) {
                     SAVE -> save(saveAs = false)
-                    DONT_SAVE -> discarding = configuration.revision()
+                    // Only what the prompt was about; an edit made since then asks again.
+                    DONT_SAVE -> discarding = result.revision
                     else -> return false
                 }
                 is DocumentChange.SaveFailed -> when (
@@ -123,7 +124,7 @@ class DocumentActions(
                 ) {
                     TRY_AGAIN -> Unit
                     SAVE_AS -> save(saveAs = true)
-                    DONT_SAVE -> discarding = configuration.revision()
+                    DONT_SAVE -> discarding = result.revision
                     else -> return false
                 }
             }

@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.flowOf
 import model.SavedColor
 import java.io.File
 import java.nio.file.Files
+import kotlin.time.Duration
 
 /** Three distinct presets with IDs 1 to 3, like the first three of the app's. */
 val fakePresetColors = List(3) { SavedColor(uid = it + 1L, red = 40 * (it + 1), green = 0, blue = 0, preset = true) }
@@ -24,6 +25,8 @@ class FakeDataRepository(
     private val session: Session? = Session(),
     private val legacyMeshState: MeshState = MeshState(),
     private val legacyMesh: MeshDocument? = null,
+    /** How long each session write takes, like a slow disk. */
+    private val sessionWriteDelay: Duration = Duration.ZERO,
 ) : DataRepository {
     /** The last session the app recorded; it records one each time a document opens or is saved. */
     val savedSession = MutableStateFlow<Session?>(null)
@@ -33,6 +36,7 @@ class FakeDataRepository(
     override fun loadSession(): Session? = session
 
     override fun saveSession(session: Session) {
+        Thread.sleep(sessionWriteDelay.inWholeMilliseconds)
         savedSession.value = session
     }
 

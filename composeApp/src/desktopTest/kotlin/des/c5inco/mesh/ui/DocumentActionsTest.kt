@@ -2,6 +2,7 @@ package des.c5inco.mesh.ui
 
 import data.MeshDocument
 import des.c5inco.mesh.data.AppConfiguration
+import des.c5inco.mesh.data.DocumentStatus
 import des.c5inco.mesh.testing.FakeDataRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +46,24 @@ class DocumentActionsTest {
 
         eventually { configuration.meshState.value.blurLevel.takeIf { it == 0f } }
         assertFalse(closed.isCompleted, "Don't Save answered New, not Quit")
+    }
+
+    @Test
+    fun `an edit made while the prompt is open isn't discarded with the changes it asked about`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val actions = DocumentActions(configuration, scope, onClose = { closed.complete(Unit) })
+        configuration.updateBlurLevel(0.5f)
+
+        withContext(Dispatchers.Main) { actions.new() }
+        val prompt = eventually { actions.prompt }
+        // Such as an agent's edit while the user reads the prompt.
+        withContext(Dispatchers.Main) { configuration.updateBlurLevel(0.7f) }
+        withContext(Dispatchers.Main) { prompt.answer(prompt.discard) }
+
+        val again = eventually { actions.prompt?.takeIf { it !== prompt } }
+        assertEquals(0.7f, configuration.meshState.value.blurLevel)
+        withContext(Dispatchers.Main) { again.answer(again.discard) }
+        assertEquals(DocumentStatus(), eventually { configuration.document.value.takeIf { it.file == null && !it.modified } })
     }
 
     @Test

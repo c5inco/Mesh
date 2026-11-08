@@ -19,7 +19,13 @@ data class DocumentColor(
     val green: Int,
     val blue: Int,
     val alpha: Float = 1f,
-)
+) {
+    init {
+        require(listOf(red, green, blue).all { it in 0..255 } && alpha in 0f..1f) {
+            "A color needs RGB from 0 to 255 and alpha from 0 to 1"
+        }
+    }
+}
 
 /** A mesh point; a null color is transparent, as after its color was deleted. */
 @Serializable

@@ -86,11 +86,14 @@ sealed interface DocumentChange {
     /** It didn't happen, and the user was told why, such as a file that couldn't be read. */
     data object Failed : DocumentChange
 
-    /** The untitled document has edits the request didn't agree to discard. */
-    data object UnsavedChanges : DocumentChange
+    /**
+     * The document has edits no file holds, and the request didn't agree to discard them. To discard them,
+     * repeat the request with [revision], taken with this check, so that a later edit is never discarded unasked.
+     */
+    data class UnsavedChanges(val revision: DocumentRevision) : DocumentChange
 
-    /** The open document's last edits couldn't be written to its file, and the request didn't agree to lose them. */
-    data class SaveFailed(val message: String) : DocumentChange
+    /** The open document's last edits couldn't be written to its file; [revision] works as for [UnsavedChanges]. */
+    data class SaveFailed(val message: String, val revision: DocumentRevision) : DocumentChange
 }
 
 /** The parts of the document that undo and redo restore. The grid size comes from [points]. */
@@ -213,14 +216,27 @@ class AppConfiguration(
                 }
             }
         }
-        scope.launch(Dispatchers.IO) {
-            sessions.filterNotNull().collect { session ->
-                try {
-                    repository.saveSession(session)
-                } catch (e: IOException) {
-                    println("Error saving session: ${e.message}")
-                }
-            }
+        scope.launch {
+            sessions.filterNotNull().collect { flushSession() }
+        }
+    }
+
+    @Volatile
+    private var writtenSession: Session? = null // Written under sessionMutex.
+    private val sessionMutex = Mutex()
+
+    /**
+     * Writes the latest session, if it hasn't been written yet. Closing and exiting wait for it, so the next
+     * launch reopens the document that was open last. A failed write is reported and tried again next time.
+     */
+    suspend fun flushSession() = sessionMutex.withLock {
+        val session = sessions.value ?: return@withLock
+        if (session == writtenSession) return@withLock
+        try {
+            withContext(Dispatchers.IO) { repository.saveSession(session) }
+            writtenSession = session
+        } catch (e: IOException) {
+            println("Error saving session: ${e.message}")
         }
     }
 
@@ -374,12 +390,13 @@ class AppConfiguration(
         if (recordSession) sessions.value = Session(lastDocument = file?.absolutePath)
     }
 
-    /** The open document and how far it has been edited. Call on the UI thread. */
-    fun revision() = DocumentRevision(generation.get(), edits.get())
+    /** The open document and how far it has been edited. */
+    private fun revision() = DocumentRevision(generation.get(), edits.get())
 
     /**
-     * Replaces the open document with a new, untitled one. Unsaved changes to an untitled document are
-     * discarded only when [discarding] is the revision the user agreed to lose.
+     * Replaces the open document with a new, untitled one. Edits no file holds are discarded only when
+     * [discarding] is the revision from the [DocumentChange.UnsavedChanges] or [DocumentChange.SaveFailed]
+     * the user agreed to.
      */
     suspend fun newDocument(discarding: DocumentRevision? = null): DocumentChange = replaceDocument(null, discarding)
 
@@ -394,6 +411,8 @@ class AppConfiguration(
     suspend fun closeDocument(discarding: DocumentRevision? = null): DocumentChange {
         // Before the startup document loads there is nothing to save, and waiting for it could keep the app from quitting.
         if (!loadStartupDocument.isCompleted) return DocumentChange.Done
+        // Closing doesn't change the session, so record it first, such as after a Save As just before closing.
+        flushSession()
         return withContext(Dispatchers.Main) { prepareToClose(discarding) ?: DocumentChange.Done }
     }
 
@@ -418,12 +437,12 @@ class AppConfiguration(
         try {
             finishPendingSave()
         } catch (e: IOException) {
-            if (discarding != revision()) return DocumentChange.SaveFailed(e.message ?: e.toString())
+            if (discarding != revision()) return DocumentChange.SaveFailed(e.message ?: e.toString(), revision())
             // The user chose to lose the edits the file is missing.
             latestSave = null
         }
-        val status = document.value
-        if (status.file == null && status.modified && discarding != revision()) return DocumentChange.UnsavedChanges
+        // An untitled document has no file to hold its edits; a saved one is edited only until a save writes them.
+        if (document.value.modified && discarding != revision()) return DocumentChange.UnsavedChanges(revision())
         return null
     }
 
@@ -434,17 +453,24 @@ class AppConfiguration(
             // The document to save is the one open now, even if another replaces it while this waits.
             val target = generation.get()
             try {
+                var currentFileFailed = false
                 try {
                     // The current file gets the last edits too, even when this saves the document elsewhere.
                     finishPendingSave()
                 } catch (e: IOException) {
                     // Saving elsewhere still keeps those edits, in the new file.
                     if (file == document.value.file) throw e
-                    latestSave = null
+                    currentFileFailed = true
                 }
                 if (generation.get() != target) return@withContext false
                 val save = PendingSave(currentDocument(), file, target, edits.get())
-                saveMutex.withLock { writeDocument(save.document, file) }
+                // The current file's unwritten save stays pending until the new file holds its edits,
+                // so that if this write fails too, closing the document still asks first.
+                val unwritten = latestSave.takeIf { currentFileFailed }
+                saveMutex.withLock {
+                    writeDocument(save.document, file)
+                    if (unwritten != null && latestSave === unwritten) lastWrittenSave = unwritten
+                }
                 // Another document may have opened while the file was being written.
                 if (generation.get() == save.generation) {
                     document.value = DocumentStatus(file, modified = edits.get() != save.edits)

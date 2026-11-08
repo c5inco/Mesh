@@ -306,7 +306,8 @@ class AppConfigurationTest {
             directory.setWritable(true)
         }
 
-        eventually { saved(documentFile).points[1][1].takeIf { it.x == 0.3f } }
+        val point = eventually { saved(documentFile).points[1][1].takeIf { it.x == 0.3f } }
+        assertEquals(0.3f, point.x)
     }
 
     @Test
@@ -467,14 +468,57 @@ class AppConfigurationTest {
         val configuration = loadedConfiguration()
 
         configuration.updateBlurLevel(0.5f)
-        assertEquals(DocumentChange.UnsavedChanges, configuration.newDocument())
-        val agreed = configuration.revision()
+        val agreed = configuration.newDocument() as DocumentChange.UnsavedChanges
         // Such as an agent's edit while the user answers.
         configuration.updateBlurLevel(0.7f)
 
-        assertEquals(DocumentChange.UnsavedChanges, configuration.newDocument(discarding = agreed))
+        val again = configuration.newDocument(discarding = agreed.revision) as DocumentChange.UnsavedChanges
         assertEquals(0.7f, configuration.meshState.value.blurLevel)
-        assertEquals(DocumentChange.Done, configuration.newDocument(discarding = configuration.revision()))
+        assertEquals(DocumentChange.Done, configuration.newDocument(discarding = again.revision))
+        assertEquals(DocumentStatus(), configuration.document.value)
+    }
+
+    @Test
+    fun `a failed Save As still leaves the edits its document's file is missing protected`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+        val elsewhere = File(directory, "Elsewhere").apply { mkdir() }
+
+        directory.setWritable(false)
+        try {
+            elsewhere.setWritable(false)
+            configuration.updateBlurLevel(0.5f)
+            assertFalse(configuration.saveDocument(File(elsewhere, "Copy.mesh")))
+            assertTrue(configuration.closeDocument() is DocumentChange.SaveFailed)
+            assertTrue(configuration.newDocument() is DocumentChange.SaveFailed)
+
+            // Once a copy holds the edits, the document's new file has everything and nothing is pending.
+            elsewhere.setWritable(true)
+            assertTrue(configuration.saveDocument(File(elsewhere, "Copy.mesh")))
+            assertEquals(DocumentChange.Done, configuration.closeDocument())
+            assertEquals(0.5f, saved(File(elsewhere, "Copy.mesh")).meshState.blurLevel)
+        } finally {
+            directory.setWritable(true)
+            elsewhere.setWritable(true)
+        }
+    }
+
+    @Test
+    fun `closing waits for the session to record the document's file`() = runBlocking {
+        val repository = FakeDataRepository(documentsDirectory = directory, sessionWriteDelay = 300.milliseconds)
+        val configuration = loadedConfiguration(repository)
+
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(DocumentChange.Done, configuration.closeDocument())
+
+        assertEquals(Session(lastDocument = documentFile.absolutePath), repository.savedSession.value)
+    }
+
+    @Test
+    fun `a file with a color channel out of range doesn't open`() = runBlocking {
+        val configuration = loadedConfiguration()
+        documentFile.writeText(defaultDocument().encode().replaceFirst("\"red\": 40", "\"red\": 300"))
+
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
         assertEquals(DocumentStatus(), configuration.document.value)
     }
 
