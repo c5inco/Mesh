@@ -15,7 +15,7 @@ object MeshTestTags {
     const val MCP_SERVER_STATUS = "mesh.mcp-server-status"
     const val DOCUMENT_NAME = "mesh.document-name"
     const val NEW_DOCUMENT = "mesh.new-document"
-    const val UNSAVED_CHANGES_PROMPT = "mesh.unsaved-changes-prompt"
+    const val DOCUMENT_PROMPT = "mesh.document-prompt"
 
     fun pointColor(row: Int, col: Int): String = "mesh.point-color-$row-$col"
 

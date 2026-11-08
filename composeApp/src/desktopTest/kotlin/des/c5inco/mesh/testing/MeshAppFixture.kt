@@ -36,7 +36,9 @@ class MeshAppFixture(
     val automator: ComposeAutomator
         get() = _automator
 
-    private lateinit var window: Frame
+    /** The main window. */
+    lateinit var window: Frame
+        private set
 
     /** The main window's title, which names the open document. */
     val windowTitle: String

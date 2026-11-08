@@ -12,6 +12,9 @@ import des.c5inco.mesh.testing.waitForTestTag
 import des.c5inco.mesh.testing.waitForText
 import java.awt.GraphicsEnvironment
 import java.awt.event.KeyEvent
+import javax.swing.JFrame
+import javax.swing.JMenuItem
+import javax.swing.SwingUtilities
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -211,7 +214,7 @@ class MeshGuiTest {
             assertEquals("Untitled — Edited", fixture.windowTitle)
 
             performSemanticsClick(waitForTestTag(MeshTestTags.NEW_DOCUMENT))
-            waitForTestTag(MeshTestTags.UNSAVED_CHANGES_PROMPT)
+            waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
             waitForText("Save changes to “Untitled”?")
             performSemanticsClick(waitForText("Don’t Save"))
             waitForVisualIdle()
@@ -240,10 +243,19 @@ class MeshGuiTest {
 
             // Type a new row count without pressing Enter, then press New.
             clearAndTypeText(waitForTestTag(MeshTestTags.ROWS_INPUT), "5")
-            pressKey(KeyEvent.VK_N, KeyEvent.CTRL_DOWN_MASK)
+            if (System.getProperty("os.name").lowercase().contains("mac")) {
+                // On macOS the File menu owns ⌘N, and synthetic key events don't reach menus,
+                // so pick the menu item that the shortcut picks.
+                SwingUtilities.invokeAndWait {
+                    val file = (fixture.window as JFrame).jMenuBar.getMenu(0)
+                    file.menuComponents.filterIsInstance<JMenuItem>().first { it.text == "New" }.doClick()
+                }
+            } else {
+                pressKey(KeyEvent.VK_N, KeyEvent.CTRL_DOWN_MASK)
+            }
             waitForVisualIdle()
 
-            waitForTestTag(MeshTestTags.UNSAVED_CHANGES_PROMPT)
+            waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
             waitForText("Row 5")
             performSemanticsClick(waitForText("Don’t Save"))
             waitForVisualIdle()

@@ -36,8 +36,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import data.MeshDocument
 import des.c5inco.mesh.data.AppConfiguration
+import des.c5inco.mesh.data.DocumentChange
+import des.c5inco.mesh.data.DocumentRevision
 import des.c5inco.mesh.testing.MeshTestTags
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.component.DefaultButton
@@ -48,9 +52,9 @@ import java.awt.Frame
 import java.io.File
 
 /**
- * Runs New, Open, Save, Save As, and Close for the window: asks for files, and asks whether to save an
- * untitled document's changes before an action would discard them. A document with a file autosaves, and
- * its last edits are written before another document replaces it or the app exits, so it needs no prompt.
+ * Runs New, Open, Save, Save As, and Close for the window, one at a time: asks for files, asks whether to
+ * save an untitled document's changes before an action would discard them, and asks what to do when a
+ * document's last edits can't be written. A document with a file autosaves, so it needs no other prompt.
  */
 class DocumentActions(
     private val configuration: AppConfiguration,
@@ -63,63 +67,99 @@ class DocumentActions(
     /** The window's focus, cleared before each action so a field being edited commits its value first. */
     var focusManager: FocusManager? = null
 
-    /** An action waiting for the user to decide what happens to unsaved changes. */
-    var pendingAction: (() -> Unit)? by mutableStateOf(null)
+    /** The question the window is asking, if any; the action that asked waits for the answer. */
+    var prompt: DocumentPrompt? by mutableStateOf(null)
         private set
 
-    fun new() {
-        commitEdits()
-        afterUnsavedChanges { scope.launch { configuration.newDocument() } }
+    /** The action in progress. Others are ignored until it finishes, so that actions never interleave. */
+    private var running: Job? = null
+
+    fun new() = perform { replaceDocument { configuration.newDocument(it) } }
+
+    fun open() = perform {
+        val file = chooseFile(FileDialog.LOAD) ?: return@perform
+        replaceDocument { configuration.openDocument(file, it) }
     }
 
-    fun open() {
-        commitEdits()
-        val file = chooseFile(FileDialog.LOAD) ?: return
-        afterUnsavedChanges { scope.launch { configuration.openDocument(file) } }
+    fun save() = perform { save(saveAs = false) }
+
+    fun saveAs() = perform { save(saveAs = true) }
+
+    fun close() = perform {
+        if (replaceDocument { configuration.closeDocument(it) }) onClose()
     }
 
-    fun save() {
-        commitEdits()
-        scope.launch { save(saveAs = false) }
-    }
-
-    fun saveAs() {
-        commitEdits()
-        scope.launch { save(saveAs = true) }
-    }
-
-    fun close() {
-        commitEdits()
-        afterUnsavedChanges(onClose)
-    }
-
-    fun saveChanges() {
-        val action = takePendingAction()
-        scope.launch { if (save(saveAs = false)) action() }
-    }
-
-    fun discardChanges() = takePendingAction()()
-
-    fun keepChanges() {
-        pendingAction = null
-    }
-
-    private fun commitEdits() {
+    private fun perform(action: suspend () -> Unit) {
+        if (running?.isActive == true) return
         focusManager?.clearFocus()
+        running = scope.launch { action() }
     }
 
-    private fun takePendingAction(): () -> Unit = requireNotNull(pendingAction).also { pendingAction = null }
-
-    private fun afterUnsavedChanges(action: () -> Unit) {
-        val document = configuration.document.value
-        if (document.modified && document.file == null) pendingAction = action else action()
+    /**
+     * Runs [change], which closes the open document, and asks the user whenever it would lose edits.
+     * [change] gets the revision the user agreed to lose, if any. Returns whether the change happened.
+     */
+    private suspend fun replaceDocument(change: suspend (discarding: DocumentRevision?) -> DocumentChange): Boolean {
+        var discarding: DocumentRevision? = null
+        while (true) {
+            val name = configuration.document.value.name
+            when (val result = change(discarding)) {
+                DocumentChange.Done -> return true
+                DocumentChange.Failed -> return false
+                // After Save, whether it worked or not, the loop asks again until nothing would be lost.
+                DocumentChange.UnsavedChanges -> when (
+                    ask("Save changes to “$name”?", "Your changes will be lost if you don’t save them.", DONT_SAVE, SAVE)
+                ) {
+                    SAVE -> save(saveAs = false)
+                    DONT_SAVE -> discarding = configuration.revision()
+                    else -> return false
+                }
+                is DocumentChange.SaveFailed -> when (
+                    ask(
+                        "Couldn’t save “$name”",
+                        "${result.message}\nYour latest changes will be lost if you don’t save them.",
+                        DONT_SAVE, SAVE_AS, TRY_AGAIN,
+                    )
+                ) {
+                    TRY_AGAIN -> Unit
+                    SAVE_AS -> save(saveAs = true)
+                    DONT_SAVE -> discarding = configuration.revision()
+                    else -> return false
+                }
+            }
+        }
     }
 
     private suspend fun save(saveAs: Boolean): Boolean {
         val file = configuration.document.value.file.takeUnless { saveAs }
-            ?: chooseFile(FileDialog.SAVE)
+            ?: chooseSaveFile()
             ?: return false
         return configuration.saveDocument(file)
+    }
+
+    private suspend fun chooseSaveFile(): File? {
+        val chosen = chooseFile(FileDialog.SAVE) ?: return null
+        val extension = MeshDocument.FILE_EXTENSION
+        if (chosen.extension == extension) return chosen
+        // The dialog asked about replacing the name as typed, not this one with the extension added.
+        val file = File("${chosen.path}.$extension")
+        val replace = !file.exists() ||
+            ask("“${file.name}” already exists", "Do you want to replace it?", null, REPLACE) == REPLACE
+        return file.takeIf { replace }
+    }
+
+    /**
+     * Asks a question over the window and returns the chosen answer, or null for Cancel. [discard] is shown
+     * apart from the other [choices], the last of which is the default.
+     */
+    private suspend fun ask(title: String, message: String, discard: String?, vararg choices: String): String? {
+        val answer = CompletableDeferred<String?>()
+        prompt = DocumentPrompt(title, message, discard, choices.toList()) { answer.complete(it) }
+        return try {
+            answer.await()
+        } finally {
+            prompt = null
+        }
     }
 
     private fun chooseFile(mode: Int): File? {
@@ -134,26 +174,37 @@ class DocumentActions(
             }
             isVisible = true
         }
-        val chosen = File(dialog.directory ?: return null, dialog.file ?: return null)
-        return if (mode == FileDialog.SAVE && chosen.extension != extension) File("${chosen.path}.$extension") else chosen
+        return File(dialog.directory ?: return null, dialog.file ?: return null)
     }
 
     private fun defaultDirectory(): File {
         val home = File(System.getProperty("user.home"))
         return File(home, "Documents").takeIf { it.isDirectory } ?: home
     }
+
+    private companion object {
+        const val DONT_SAVE = "Don’t Save"
+        const val SAVE = "Save"
+        const val SAVE_AS = "Save As…"
+        const val TRY_AGAIN = "Try Again"
+        const val REPLACE = "Replace"
+    }
 }
 
-/** Asks, over the window, whether to save the document's changes before they would be discarded. */
+/** A question for the user; [answer] takes one of the choices, or null to cancel. */
+class DocumentPrompt(
+    val title: String,
+    val message: String,
+    val discard: String?,
+    val choices: List<String>,
+    val answer: (String?) -> Unit,
+)
+
+/** Shows [prompt] over the window. */
 @Composable
-fun UnsavedChangesPrompt(
-    documentName: String,
-    onSave: () -> Unit,
-    onDiscard: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    val saveFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { saveFocus.requestFocus() }
+fun DocumentPromptView(prompt: DocumentPrompt) {
+    val defaultFocus = remember { FocusRequester() }
+    LaunchedEffect(prompt) { defaultFocus.requestFocus() }
 
     Box(
         contentAlignment = Alignment.Center,
@@ -165,8 +216,8 @@ fun UnsavedChangesPrompt(
             .onPreviewKeyEvent {
                 when {
                     it.type != KeyEventType.KeyDown -> false
-                    it.key == Key.Enter || it.key == Key.NumPadEnter -> true.also { onSave() }
-                    it.key == Key.Escape -> true.also { onCancel() }
+                    it.key == Key.Enter || it.key == Key.NumPadEnter -> true.also { prompt.answer(prompt.choices.last()) }
+                    it.key == Key.Escape -> true.also { prompt.answer(null) }
                     else -> false
                 }
             },
@@ -178,24 +229,25 @@ fun UnsavedChangesPrompt(
                 .background(JewelTheme.globalColors.panelBackground, shape)
                 .border(1.dp, JewelTheme.globalColors.borders.normal, shape)
                 .padding(20.dp)
-                .testTag(MeshTestTags.UNSAVED_CHANGES_PROMPT)
+                .testTag(MeshTestTags.DOCUMENT_PROMPT)
         ) {
-            Text("Save changes to “$documentName”?", fontWeight = FontWeight.SemiBold)
+            Text(prompt.title, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            Text(
-                "Your changes will be lost if you don’t save them.",
-                color = JewelTheme.globalColors.text.info,
-            )
+            Text(prompt.message, color = JewelTheme.globalColors.text.info)
             Spacer(Modifier.height(20.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                OutlinedButton(onClick = onDiscard) { Text("Don’t Save") }
+                prompt.discard?.let { OutlinedButton(onClick = { prompt.answer(it) }) { Text(it) } }
                 Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = onCancel) { Text("Cancel") }
-                DefaultButton(onClick = onSave, modifier = Modifier.focusRequester(saveFocus)) { Text("Save") }
+                OutlinedButton(onClick = { prompt.answer(null) }) { Text("Cancel") }
+                prompt.choices.dropLast(1).forEach { OutlinedButton(onClick = { prompt.answer(it) }) { Text(it) } }
+                val default = prompt.choices.last()
+                DefaultButton(onClick = { prompt.answer(default) }, modifier = Modifier.focusRequester(defaultFocus)) {
+                    Text(default)
+                }
             }
         }
     }

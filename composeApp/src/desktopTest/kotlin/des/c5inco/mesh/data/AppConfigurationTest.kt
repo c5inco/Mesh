@@ -373,7 +373,7 @@ class AppConfigurationTest {
 
         val otherPresets = fakePresetColors.map { it.copy(uid = it.uid + 100) }
         val elsewhere = loadedConfiguration(FakeDataRepository(initialColors = otherPresets, documentsDirectory = directory))
-        assertTrue(elsewhere.openDocument(documentFile))
+        assertEquals(DocumentChange.Done, elsewhere.openDocument(documentFile))
 
         val customColor = elsewhere.customColors.value.single()
         assertEquals(listOf(255, 0, 0, 0.5f), listOf(customColor.red, customColor.green, customColor.blue, customColor.alpha))
@@ -386,9 +386,12 @@ class AppConfigurationTest {
     @Test
     fun `a file from a newer version of Mesh doesn't replace the open document`() = runBlocking {
         val configuration = loadedConfiguration()
-        documentFile.writeText(defaultDocument().copy(version = MeshDocument.CURRENT_VERSION + 1).encode())
+        // A newer format may not decode as this one at all.
+        documentFile.writeText("""{"version": ${MeshDocument.CURRENT_VERSION + 1}, "layers": []}""")
 
-        assertFalse(configuration.openDocument(documentFile))
+        val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
+        assertTrue(error.message!!.contains("needs a newer version"), error.message)
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
         assertEquals(DocumentStatus(), configuration.document.value)
     }
 
@@ -437,16 +440,83 @@ class AppConfigurationTest {
         val configuration = openedConfiguration(first)
 
         configuration.updateMeshPoint(1, 1, Offset(0.3f, 0.6f) to 3L)
-        assertTrue(configuration.openDocument(second))
+        assertEquals(DocumentChange.Done, configuration.openDocument(second))
 
         assertEquals(0.3f, saved(first).points[1][1].x, "The edit was still waiting for its autosave")
         assertEquals(DocumentStatus(file = second, modified = false), configuration.document.value)
         assertFalse(configuration.canUndo.value)
 
-        assertTrue(configuration.newDocument())
+        assertEquals(DocumentChange.Done, configuration.newDocument())
         assertEquals(DocumentStatus(), configuration.document.value)
         assertEquals(defaultDocument().points.map { it.size }, configuration.meshPoints.map { it.size })
     }
+
+    @Test
+    fun `reopening the open document shows its last edit`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+
+        configuration.updateBlurLevel(0.5f)
+        assertEquals(DocumentChange.Done, configuration.openDocument(documentFile))
+
+        assertEquals(0.5f, configuration.meshState.value.blurLevel, "The file was read before the edit was saved to it")
+        assertEquals(0.5f, saved(documentFile).meshState.blurLevel)
+    }
+
+    @Test
+    fun `an untitled document's edits are discarded only as far as the user agreed`() = runBlocking {
+        val configuration = loadedConfiguration()
+
+        configuration.updateBlurLevel(0.5f)
+        assertEquals(DocumentChange.UnsavedChanges, configuration.newDocument())
+        val agreed = configuration.revision()
+        // Such as an agent's edit while the user answers.
+        configuration.updateBlurLevel(0.7f)
+
+        assertEquals(DocumentChange.UnsavedChanges, configuration.newDocument(discarding = agreed))
+        assertEquals(0.7f, configuration.meshState.value.blurLevel)
+        assertEquals(DocumentChange.Done, configuration.newDocument(discarding = configuration.revision()))
+        assertEquals(DocumentStatus(), configuration.document.value)
+    }
+
+    @Test
+    fun `closing a document whose last edit can't be saved asks first`() = runBlocking {
+        val configuration = openedConfiguration(writeDocument(documentFile))
+
+        directory.setWritable(false)
+        try {
+            configuration.updateBlurLevel(0.5f)
+            assertTrue(configuration.closeDocument() is DocumentChange.SaveFailed)
+            assertTrue(configuration.document.value.modified)
+        } finally {
+            directory.setWritable(true)
+        }
+
+        assertEquals(DocumentChange.Done, configuration.closeDocument())
+        assertEquals(0.5f, saved(documentFile).meshState.blurLevel)
+    }
+
+    @Test
+    fun `a launch that can't open or migrate its document leaves the session for the next launch to try again`() =
+        runBlocking {
+            val notADirectory = File(directory, "file").apply { writeText("") }
+            val failedMigration = FakeDataRepository(
+                documentsDirectory = File(notADirectory, "documents"),
+                session = null,
+                legacyMesh = defaultDocument(),
+            )
+            val migrating = loadedConfiguration(failedMigration)
+            assertEquals(DocumentStatus(file = null, modified = true), migrating.document.value)
+
+            val missingDocument = FakeDataRepository(
+                documentsDirectory = directory,
+                session = Session(lastDocument = File(directory, "Missing.mesh").absolutePath),
+            )
+            loadedConfiguration(missingDocument)
+
+            delay(500.milliseconds) // Sessions are written in the background.
+            assertEquals(null, failedMigration.savedSession.value)
+            assertEquals(null, missingDocument.savedSession.value)
+        }
 
     private suspend fun loadedConfiguration(
         repository: FakeDataRepository = FakeDataRepository(documentsDirectory = directory),

@@ -25,7 +25,7 @@ import androidx.compose.ui.window.rememberWindowState
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.mcp.McpServerController
 import des.c5inco.mesh.ui.DocumentActions
-import des.c5inco.mesh.ui.UnsavedChangesPrompt
+import des.c5inco.mesh.ui.DocumentPromptView
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.intui.standalone.theme.IntUiTheme
 import org.jetbrains.jewel.intui.standalone.theme.darkThemeDefinition
@@ -101,14 +101,7 @@ fun MeshWindow(
                     mcpServer = mcpServer,
                 )
 
-                if (actions.pendingAction != null) {
-                    UnsavedChangesPrompt(
-                        documentName = document.name,
-                        onSave = actions::saveChanges,
-                        onDiscard = actions::discardChanges,
-                        onCancel = actions::keepChanges,
-                    )
-                }
+                actions.prompt?.let { DocumentPromptView(it) }
             }
         }
     }

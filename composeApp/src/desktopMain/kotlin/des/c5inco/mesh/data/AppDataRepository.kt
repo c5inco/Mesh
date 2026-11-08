@@ -17,11 +17,15 @@ import kotlinx.serialization.json.Json
 import model.SavedColor
 import model.toSavedColor
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class AppDataRepository : DataRepository {
     private val database = getRoomDatabase(getDatabaseBuilder())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionFile = File(meshDataDirectory(), "session.json")
+    // A later version of Mesh may record more in the session.
+    private val sessionJson = Json { ignoreUnknownKeys = true }
 
     override val documentsDirectory = File(meshDataDirectory(), "documents")
 
@@ -45,16 +49,26 @@ class AppDataRepository : DataRepository {
     override fun loadSession(): Session? {
         if (!sessionFile.exists()) return null
         return try {
-            Json.decodeFromString(Session.serializer(), sessionFile.readText())
+            sessionJson.decodeFromString(Session.serializer(), sessionFile.readText())
         } catch (e: Exception) {
+            // Without a session there is no telling whether the old mesh was migrated, so it may be migrated again.
             println("Error loading session: ${e.message}")
-            Session()
+            null
         }
     }
 
     override fun saveSession(session: Session) {
-        sessionFile.parentFile.mkdirs()
-        sessionFile.writeText(Json.encodeToString(Session.serializer(), session))
+        val directory = sessionFile.parentFile
+        directory.mkdirs()
+        // Written through a temporary file, so a crash mid-write can't leave a broken session.
+        val temporaryFile = File(directory, ".${sessionFile.name}.tmp")
+        temporaryFile.writeText(sessionJson.encodeToString(Session.serializer(), session))
+        Files.move(
+            temporaryFile.toPath(),
+            sessionFile.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE,
+        )
     }
 
     override fun loadLegacyMeshState(): MeshState = MeshStateManager.loadState()

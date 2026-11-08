@@ -37,7 +37,8 @@ fun main() {
 private fun shutdown(
     configuration: AppConfiguration
 ) {
-    // Writes the open document's last autosave; waiting on the UI thread here could hang the exit.
+    // Closing the window already wrote the document; this catches exits that skip it, such as a signal.
+    // Waiting on the UI thread here could hang the exit.
     runBlocking<Unit> {
         configuration.flushPendingSave()
     }

@@ -76,6 +76,23 @@ data class DocumentStatus(
     val name: String get() = file?.nameWithoutExtension ?: "Untitled"
 }
 
+/** Which document is open and how many edits it has had, so an action can tell whether it changed since the user decided. */
+data class DocumentRevision(val generation: Int, val edits: Long)
+
+/** What became of a request to close the open document or replace it with another. */
+sealed interface DocumentChange {
+    data object Done : DocumentChange
+
+    /** It didn't happen, and the user was told why, such as a file that couldn't be read. */
+    data object Failed : DocumentChange
+
+    /** The untitled document has edits the request didn't agree to discard. */
+    data object UnsavedChanges : DocumentChange
+
+    /** The open document's last edits couldn't be written to its file, and the request didn't agree to lose them. */
+    data class SaveFailed(val message: String) : DocumentChange
+}
+
 /** The parts of the document that undo and redo restore. The grid size comes from [points]. */
 private data class EditSnapshot(
     val points: List<List<Pair<Offset, Long>>>,
@@ -277,7 +294,8 @@ class AppConfiguration(
         val startup = when {
             startupDocument != null -> StartupDocument(startupDocument, startupFile)
             session == null -> migrateLegacyMesh()
-            else -> StartupDocument(null, null)
+            // A last document that can't be read now, such as one on a drive that isn't mounted, is tried again next launch.
+            else -> StartupDocument(null, null, recordSession = startupFile == null)
         }
         withContext(Dispatchers.Main) {
             loadedPresetColors = presets
@@ -285,7 +303,13 @@ class AppConfiguration(
         }
     }
 
-    private class StartupDocument(val document: MeshDocument?, val file: File?, val modified: Boolean = false)
+    private class StartupDocument(
+        val document: MeshDocument?,
+        val file: File?,
+        val modified: Boolean = false,
+        /** False to keep the last session, so the next launch tries again what this one couldn't open or migrate. */
+        val recordSession: Boolean = true,
+    )
 
     /** Saves the single mesh from before documents existed as the first document, so upgrading loses nothing. */
     private suspend fun migrateLegacyMesh(): StartupDocument {
@@ -298,9 +322,9 @@ class AppConfiguration(
             writeDocument(legacyMesh, file)
             StartupDocument(legacyMesh, file)
         } catch (e: IOException) {
-            // Keep the mesh open as unsaved changes rather than lose it.
+            // Keep the mesh open as unsaved changes rather than lose it, and migrate it again next launch.
             println("Error saving the migrated mesh: ${e.message}")
-            StartupDocument(legacyMesh, null, modified = true)
+            StartupDocument(legacyMesh, null, modified = true, recordSession = false)
         }
     }
 
@@ -308,7 +332,7 @@ class AppConfiguration(
         val editedState = meshState.value
         val colorsAddedWhileLoading = customColors.value
         val backgroundWhileLoading = canvasBackgroundColor.value
-        show(startup.document, startup.file, startup.modified)
+        show(startup.document, startup.file, startup.modified, startup.recordSession)
         if (!editedWhileLoading) return
 
         // Colors added while loading have IDs that no color in the document uses.
@@ -328,7 +352,7 @@ class AppConfiguration(
     }
 
     /** Replaces the open document. Call on the UI thread once the presets have loaded. */
-    private fun show(replacement: MeshDocument?, file: File?, modified: Boolean = false) {
+    private fun show(replacement: MeshDocument?, file: File?, modified: Boolean = false, recordSession: Boolean = true) {
         val opened = replacement?.open(loadedPresetColors, nextCustomColorId::getAndIncrement)
             ?: OpenedMesh(MeshState(), TRANSPARENT_COLOR_ID, emptyList(), defaultMeshPointGrid(paletteIds()))
         generation.incrementAndGet()
@@ -347,41 +371,79 @@ class AppConfiguration(
         meshPoints.addAll(opened.points)
         history.clear()
         document.value = DocumentStatus(file, modified)
-        sessions.value = Session(lastDocument = file?.absolutePath)
+        if (recordSession) sessions.value = Session(lastDocument = file?.absolutePath)
     }
 
-    /** Replaces the open document with a new, untitled one. */
-    suspend fun newDocument(): Boolean = replaceDocument(null, null)
+    /** The open document and how far it has been edited. Call on the UI thread. */
+    fun revision() = DocumentRevision(generation.get(), edits.get())
 
-    /** Opens the document in [file], replacing the open one; returns false and says why when it can't. */
-    suspend fun openDocument(file: File): Boolean {
-        val replacement = withContext(Dispatchers.IO) { readDocumentOrNull(file) } ?: return false
-        return replaceDocument(replacement, file)
+    /**
+     * Replaces the open document with a new, untitled one. Unsaved changes to an untitled document are
+     * discarded only when [discarding] is the revision the user agreed to lose.
+     */
+    suspend fun newDocument(discarding: DocumentRevision? = null): DocumentChange = replaceDocument(null, discarding)
+
+    /** Opens the document in [file], replacing the open one, with unsaved changes treated as by [newDocument]. */
+    suspend fun openDocument(file: File, discarding: DocumentRevision? = null): DocumentChange =
+        replaceDocument(file, discarding)
+
+    /**
+     * Gets the open document ready for the window to close: writes its last edits to its file and checks
+     * for changes that would be lost, as [newDocument] does. On [DocumentChange.Done] nothing is left to save.
+     */
+    suspend fun closeDocument(discarding: DocumentRevision? = null): DocumentChange {
+        // Before the startup document loads there is nothing to save, and waiting for it could keep the app from quitting.
+        if (!loadStartupDocument.isCompleted) return DocumentChange.Done
+        return withContext(Dispatchers.Main) { prepareToClose(discarding) ?: DocumentChange.Done }
     }
 
-    private suspend fun replaceDocument(replacement: MeshDocument?, file: File?): Boolean {
+    private suspend fun replaceDocument(file: File?, discarding: DocumentRevision?): DocumentChange {
         loadStartupDocument.await()
         return withContext(Dispatchers.Main) {
-            try {
-                // The open document's last edits go to its file before it closes.
-                finishPendingSave()
-            } catch (e: IOException) {
-                Notifications.send("Couldn't save ${document.value.name}: ${e.message}")
-                return@withContext false
-            }
+            prepareToClose(discarding)?.let { return@withContext it }
+            // Read only now, after the open document's last save, so reopening it shows what was just written.
+            // The file is small, and reading it here leaves no moment for an edit to slip in before the switch.
+            val replacement = file?.let { readDocumentOrNull(it) ?: return@withContext DocumentChange.Failed }
             show(replacement, file)
-            true
+            DocumentChange.Done
         }
+    }
+
+    /**
+     * Writes the open document's last edits and checks that closing it loses nothing the caller didn't agree
+     * to lose with [discarding]. Returns why it can't close, or null. Call on the UI thread, and close the
+     * document without suspending after a null, so no edit slips in between.
+     */
+    private suspend fun prepareToClose(discarding: DocumentRevision?): DocumentChange? {
+        try {
+            finishPendingSave()
+        } catch (e: IOException) {
+            if (discarding != revision()) return DocumentChange.SaveFailed(e.message ?: e.toString())
+            // The user chose to lose the edits the file is missing.
+            latestSave = null
+        }
+        val status = document.value
+        if (status.file == null && status.modified && discarding != revision()) return DocumentChange.UnsavedChanges
+        return null
     }
 
     /** Writes the open document to [file], which becomes its file; returns false and says why when it can't. */
     suspend fun saveDocument(file: File): Boolean {
         loadStartupDocument.await()
         return withContext(Dispatchers.Main) {
+            // The document to save is the one open now, even if another replaces it while this waits.
+            val target = generation.get()
             try {
-                // The current file gets the last edits too, even when this saves the document elsewhere.
-                finishPendingSave()
-                val save = PendingSave(currentDocument(), file, generation.get(), edits.get())
+                try {
+                    // The current file gets the last edits too, even when this saves the document elsewhere.
+                    finishPendingSave()
+                } catch (e: IOException) {
+                    // Saving elsewhere still keeps those edits, in the new file.
+                    if (file == document.value.file) throw e
+                    latestSave = null
+                }
+                if (generation.get() != target) return@withContext false
+                val save = PendingSave(currentDocument(), file, target, edits.get())
                 saveMutex.withLock { writeDocument(save.document, file) }
                 // Another document may have opened while the file was being written.
                 if (generation.get() == save.generation) {

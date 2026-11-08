@@ -29,7 +29,7 @@ interface DataRepository {
 
     fun getPresetColors(): Flow<List<SavedColor>>
 
-    /** The last session, or null when this version of Mesh has never run, so the old mesh still needs migrating. */
+    /** The last session, or null when there is none to read, so the old mesh may still need migrating. */
     fun loadSession(): Session?
     fun saveSession(session: Session)
 

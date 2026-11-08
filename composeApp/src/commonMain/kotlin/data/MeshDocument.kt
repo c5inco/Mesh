@@ -3,6 +3,9 @@ package data
 import androidx.compose.ui.geometry.Offset
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import model.MeshPoint
 import model.SavedColor
 import model.defaultMeshPointGrid
@@ -59,11 +62,11 @@ data class MeshDocument(
         }
 
         fun decode(text: String): MeshDocument {
-            val document = json.decodeFromString(serializer(), text)
-            require(document.version <= CURRENT_VERSION) {
-                "This file needs a newer version of Mesh (format ${document.version})"
-            }
-            return document
+            val element = json.parseToJsonElement(text)
+            // Checked first, since a newer format may not decode as this one.
+            val version = element.jsonObject["version"]?.jsonPrimitive?.intOrNull ?: CURRENT_VERSION
+            require(version <= CURRENT_VERSION) { "This file needs a newer version of Mesh (format $version)" }
+            return json.decodeFromJsonElement(serializer(), element)
         }
     }
 }
