@@ -12,8 +12,11 @@ import androidx.compose.ui.renderComposeScene
 import androidx.compose.ui.unit.Density
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.AppConfiguration.Companion.MAX_BLUR_LEVEL
+import des.c5inco.mesh.data.MeshPointEdit
 import des.c5inco.mesh.ui.meshGradientPainter
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
@@ -30,6 +33,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -64,7 +68,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         serverInfo = Implementation(name = "mesh", version = "1.0.0"),
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
-            "Call get_mesh first to read the grid and the color IDs, then edit with update_point and add_color, " +
+            "Call get_mesh first to read the grid and the color IDs, then edit with set_grid, update_point (or update_points for many at once), " +
+            "and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
         addTool(
@@ -92,6 +97,32 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         ) { configuration.awaitMeshLoaded(); updatePoint(it) }
 
         addTool(
+            name = "update_points",
+            description = "Moves and/or recolors many points as a single undoable edit, like update_point for each " +
+                "entry in order. If any entry is invalid, no point changes.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("points") {
+                        put("type", "array")
+                        put("description", "Point edits, each {row, col, x?, y?, colorId?} as in update_point")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("row") { put("type", "integer") }
+                                putJsonObject("col") { put("type", "integer") }
+                                putJsonObject("x") { put("type", "number") }
+                                putJsonObject("y") { put("type", "number") }
+                                putJsonObject("colorId") { put("type", "integer") }
+                            }
+                            put("required", buildJsonArray { add(JsonPrimitive("row")); add(JsonPrimitive("col")) })
+                        }
+                    }
+                },
+                required = listOf("points"),
+            ),
+        ) { configuration.awaitMeshLoaded(); updatePoints(it) }
+
+        addTool(
             name = "add_color",
             description = "Adds a custom color to the open document and returns its color ID.",
             inputSchema = ToolSchema(
@@ -104,6 +135,19 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 required = listOf("hex"),
             ),
         ) { configuration.awaitMeshLoaded(); addColor(it) }
+
+        addTool(
+            name = "set_grid",
+            description = "Changes the grid size and/or blur. Omitted fields keep their current value. Changing " +
+                "rows or columns replaces every point with an evenly spaced grid, so call get_mesh again afterwards.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("rows") { put("type", "integer"); put("description", "Rows, $MIN_GRID_SIZE to $MAX_GRID_SIZE") }
+                    putJsonObject("cols") { put("type", "integer"); put("description", "Columns, $MIN_GRID_SIZE to $MAX_GRID_SIZE") }
+                    putJsonObject("blur") { put("type", "number"); put("description", "Blur level, 0 to 1") }
+                },
+            ),
+        ) { configuration.awaitMeshLoaded(); setGrid(it) }
 
         addTool(
             name = "undo",
@@ -177,13 +221,46 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         updatePoint(request, paletteIds)
     }
 
-    private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult = run {
-        val args = request.arguments ?: JsonObject(emptyMap())
-        val row = args.int("row") ?: return@run error("row is required")
-        val col = args.int("col") ?: return@run error("col is required")
+    private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult {
+        val edit = when (val parsed = parsePointEdit(request.arguments ?: JsonObject(emptyMap()), paletteIds)) {
+            is ParsedEdit.Valid -> parsed.edit
+            is ParsedEdit.Invalid -> return error(parsed.message)
+        }
+        configuration.updateMeshPoint(edit.row, edit.col, edit.point)
+        val (offset, newColorId) = configuration.meshPoints[edit.row][edit.col]
+        return CallToolResult(
+            content = listOf(TextContent("Point (${edit.row}, ${edit.col}) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
+        )
+    }
+
+    /** Validates every edit before applying any, so a bad entry leaves the mesh untouched. */
+    private suspend fun updatePoints(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
+        val entries = (request.arguments?.get("points") as? JsonArray)
+            ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?}")
+        val paletteIds = configuration.palette().map { it.uid }.toSet()
+        val edits = entries.mapIndexed { index, entry ->
+            val args = entry as? JsonObject ?: return@withContext error("points[$index] must be an object")
+            when (val parsed = parsePointEdit(args, paletteIds)) {
+                is ParsedEdit.Valid -> parsed.edit
+                is ParsedEdit.Invalid -> return@withContext error("points[$index]: ${parsed.message}")
+            }
+        }
+        configuration.updateMeshPoints(edits)
+        CallToolResult(content = listOf(TextContent("Updated ${edits.size} points as one edit")))
+    }
+
+    private sealed interface ParsedEdit {
+        data class Valid(val edit: MeshPointEdit) : ParsedEdit
+        data class Invalid(val message: String) : ParsedEdit
+    }
+
+    /** Reads the edit that [args] describe, checking it against the open mesh and [paletteIds]. */
+    private fun parsePointEdit(args: JsonObject, paletteIds: Set<Long>): ParsedEdit {
+        val row = args.int("row") ?: return ParsedEdit.Invalid("row is required")
+        val col = args.int("col") ?: return ParsedEdit.Invalid("col is required")
         val points = configuration.meshPoints
         if (row !in points.indices || col !in points[row].indices) {
-            return@run error("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
+            return ParsedEdit.Invalid("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
         }
 
         val (current, currentColorId) = points[row][col]
@@ -191,22 +268,37 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         // including the transparent ID of a deleted color or an offset typed outside 0–1 in the side panel.
         val requestedColorId = args.long("colorId")
         if (requestedColorId != null && requestedColorId != currentColorId && requestedColorId !in paletteIds) {
-            return@run error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
+            return ParsedEdit.Invalid("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
         }
         val requestedX = args.float("x")
         val requestedY = args.float("y")
         if (requestedX?.let { it !in 0f..1f } == true || requestedY?.let { it !in 0f..1f } == true) {
-            return@run error("x and y must be between 0 and 1")
+            return ParsedEdit.Invalid("x and y must be between 0 and 1")
         }
-        val colorId = requestedColorId ?: currentColorId
         val x = requestedX ?: current.x
         val y = requestedY ?: current.y
+        return ParsedEdit.Valid(MeshPointEdit(row, col, Offset(x, y) to (requestedColorId ?: currentColorId)))
+    }
 
-        configuration.updateMeshPoint(row, col, Offset(x, y) to colorId)
-        val (offset, newColorId) = configuration.meshPoints[row][col]
-        CallToolResult(
-            content = listOf(TextContent("Point ($row, $col) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
-        )
+    private suspend fun setGrid(request: CallToolRequest): CallToolResult {
+        val args = request.arguments ?: JsonObject(emptyMap())
+        val rows = args.int("rows")
+        val cols = args.int("cols")
+        val blur = args.float("blur")
+        if (rows?.let { it !in MIN_GRID_SIZE..MAX_GRID_SIZE } == true || cols?.let { it !in MIN_GRID_SIZE..MAX_GRID_SIZE } == true) {
+            return error("rows and cols must be between $MIN_GRID_SIZE and $MAX_GRID_SIZE")
+        }
+        if (blur?.let { it !in 0f..1f } == true) return error("blur must be between 0 and 1")
+
+        return withContext(Dispatchers.Main) {
+            rows?.let(configuration::updateTotalRows)
+            cols?.let(configuration::updateTotalCols)
+            blur?.let(configuration::updateBlurLevel)
+            val state = configuration.meshState.value
+            CallToolResult(
+                content = listOf(TextContent("The grid is now ${state.rows}×${state.cols} with blur ${state.blurLevel}"))
+            )
+        }
     }
 
     private suspend fun undoOrRedo(redo: Boolean): CallToolResult = withContext(Dispatchers.Main) {

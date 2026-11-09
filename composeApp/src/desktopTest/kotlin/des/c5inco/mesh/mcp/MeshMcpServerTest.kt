@@ -1,6 +1,7 @@
 package des.c5inco.mesh.mcp
 
 import androidx.compose.ui.geometry.Offset
+import data.MAX_GRID_SIZE
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.testing.FakeDataRepository
 import io.ktor.client.HttpClient
@@ -97,6 +98,70 @@ class MeshMcpServerTest {
 
         callOk("redo", emptyMap())
         assertEquals(0.9f to 3L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+    }
+
+    @Test
+    fun `set_grid resizes the grid and sets the blur, and undo takes it back`() = runBlocking {
+        callOk("set_grid", mapOf("rows" to 5, "cols" to 6, "blur" to 0.2))
+
+        val mesh = getMesh()
+        assertEquals(5 to 6, mesh.int("rows") to mesh.int("cols"))
+        assertEquals(30, mesh["points"]!!.jsonArray.size)
+        assertEquals(0.2f, mesh["blurLevel"]!!.jsonPrimitive.float)
+
+        // Rows, columns, and blur are each their own edit, as in the side panel.
+        repeat(3) { callOk("undo", emptyMap()) }
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(12, configuration.meshPoints.sumOf { it.size })
+    }
+
+    @Test
+    fun `set_grid rejects out-of-range values without changing anything`() = runBlocking {
+        val before = configuration.meshState.value
+
+        assertEquals(true, client.callTool("set_grid", mapOf("rows" to MAX_GRID_SIZE + 1)).isError)
+        assertEquals(true, client.callTool("set_grid", mapOf("cols" to 4, "blur" to 1.5)).isError)
+        assertEquals(before, configuration.meshState.value)
+    }
+
+    @Test
+    fun `update_points applies every edit as one undo step`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        callOk(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                    mapOf("row" to 1, "col" to 2, "y" to 0.6),
+                    mapOf("row" to 0, "col" to 1, "x" to 0.4, "y" to 0.5),
+                )
+            ),
+        )
+
+        assertEquals(0.25f to 3L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+        assertEquals(0.6f, configuration.meshPoints[1][2].first.y)
+        assertEquals(Offset(0.4f, 0f), configuration.meshPoints[0][1].first, "Edge points stay on their edge")
+
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+    }
+
+    @Test
+    fun `update_points changes nothing when any entry is invalid`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        val result = client.callTool(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 9, "col" to 0, "x" to 0.5),
+                )
+            ),
+        )
+
+        assertEquals(true, result.isError)
+        assertTrue(result.text().startsWith("points[1]:"), result.text())
+        assertEquals(before, configuration.meshPoints.toList())
     }
 
     @Test

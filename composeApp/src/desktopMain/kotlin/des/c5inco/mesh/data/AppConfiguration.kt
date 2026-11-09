@@ -15,6 +15,8 @@ import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
 import data.FIRST_CUSTOM_COLOR_ID
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import data.MeshDocument
 import data.MeshState
 import data.OpenedMesh
@@ -95,6 +97,9 @@ sealed interface DocumentChange {
     /** The open document's last edits couldn't be written to its file; [revision] works as for [UnsavedChanges]. */
     data class SaveFailed(val message: String, val revision: DocumentRevision) : DocumentChange
 }
+
+/** Moves and recolors the point at [row] and [col]; see [AppConfiguration.updateMeshPoints]. */
+data class MeshPointEdit(val row: Int, val col: Int, val point: Pair<Offset, Long>)
 
 /** The parts of the document that undo and redo restore. The grid size comes from [points]. */
 private data class EditSnapshot(
@@ -579,9 +584,9 @@ class AppConfiguration(
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) = resize(rows = rows.coerceIn(2, 10), cols = meshState.value.cols)
+    fun updateTotalRows(rows: Int) = resize(rows = rows.coerceIn(MIN_GRID_SIZE, MAX_GRID_SIZE), cols = meshState.value.cols)
 
-    fun updateTotalCols(cols: Int) = resize(rows = meshState.value.rows, cols = cols.coerceIn(2, 10))
+    fun updateTotalCols(cols: Int) = resize(rows = meshState.value.rows, cols = cols.coerceIn(MIN_GRID_SIZE, MAX_GRID_SIZE))
 
     private fun resize(rows: Int, cols: Int) {
         if (meshPoints.isEmpty()) {
@@ -609,6 +614,15 @@ class AppConfiguration(
             constrainEdges = constrainEdgePoints,
         )
         meshPoints[row] = updatedPoints[row]
+    }
+
+    /** Applies several point edits, in order, as a single undo step. */
+    fun updateMeshPoints(edits: List<MeshPointEdit>) = recordEdit {
+        var points = meshPoints.toList()
+        edits.forEach { (row, col, point) ->
+            points = points.withUpdatedMeshPoint(row = row, col = col, point = point, constrainEdges = constrainEdgePoints)
+        }
+        points.forEachIndexed { row, updatedRow -> if (meshPoints[row] != updatedRow) meshPoints[row] = updatedRow }
     }
 
     fun distributeMeshPointsEvenly() = recordEdit {
