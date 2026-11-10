@@ -360,10 +360,12 @@ class AppConfiguration(
         // Colors added while loading have IDs that no color in the document uses.
         customColors.update { it + colorsAddedWhileLoading }
         if (backgroundSetWhileLoading) canvasBackgroundColor.value = backgroundWhileLoading
+        // A resize requested while loading, as an undo step back to the loaded grid and blur. The snapshot is
+        // taken while the loaded state is still in place, so undoing the resize restores the loaded blur too.
+        val resized = resizedWhileLoading && (editedState.rows != meshPoints.size || editedState.cols != meshPoints[0].size)
+        val before = if (resized) snapshot() else null
         meshState.value = editedState.copy(rows = meshPoints.size, cols = meshPoints[0].size)
-        // Apply a resize requested while loading, as an undo step back to the loaded grid.
-        if (resizedWhileLoading && (editedState.rows != meshPoints.size || editedState.cols != meshPoints[0].size)) {
-            val before = snapshot()
+        if (before != null) {
             val generatedPoints = generateMeshPointGrid(editedState.rows, editedState.cols, paletteIds())
             meshPoints.clear()
             meshPoints.addAll(generatedPoints)
