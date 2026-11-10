@@ -12,8 +12,11 @@ import androidx.compose.ui.renderComposeScene
 import androidx.compose.ui.unit.Density
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.data.AppConfiguration.Companion.MAX_BLUR_LEVEL
+import des.c5inco.mesh.data.MeshPointEdit
 import des.c5inco.mesh.ui.meshGradientPainter
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
@@ -30,19 +33,20 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import model.SavedColor
 import model.findColor
+import model.withUpdatedMeshPoint
 import org.jetbrains.skia.EncodedImageFormat
 import kotlin.io.encoding.Base64
 import kotlin.math.roundToInt
@@ -64,7 +68,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         serverInfo = Implementation(name = "mesh", version = "1.0.0"),
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
-            "Call get_mesh first to read the grid and the color IDs, then edit with update_point and add_color, " +
+            "Call get_mesh first to read the grid and the color IDs, then edit with set_grid, update_point (or update_points for many at once), " +
+            "and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
         addTool(
@@ -78,7 +83,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         addTool(
             name = "update_point",
             description = "Moves and/or recolors the point at a row and column. Omitted fields keep their " +
-                "current value. When edge constraints are on (the default), edge points stay on their edge.",
+                "current value; fields other than row, col, x, y, and colorId are rejected. When edge constraints " +
+                "are on (the default), edge points stay on their edge.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("row") { put("type", "integer"); put("description", "Row index, from 0") }
@@ -90,6 +96,36 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 required = listOf("row", "col"),
             ),
         ) { configuration.awaitMeshLoaded(); updatePoint(it) }
+
+        addTool(
+            name = "update_points",
+            description = "Moves and/or recolors many points as a single undoable edit, like update_point for each " +
+                "entry in order, and returns where each edited point ended up. Takes 1 to $MAX_BATCH_POINTS entries. " +
+                "If any entry is invalid, no point changes.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("points") {
+                        put("type", "array")
+                        put("minItems", 1)
+                        put("maxItems", MAX_BATCH_POINTS)
+                        put("description", "Point edits, each {row, col, x?, y?, colorId?} as in update_point")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("row") { put("type", "integer") }
+                                putJsonObject("col") { put("type", "integer") }
+                                putJsonObject("x") { put("type", "number") }
+                                putJsonObject("y") { put("type", "number") }
+                                putJsonObject("colorId") { put("type", "integer") }
+                            }
+                            put("required", buildJsonArray { add(JsonPrimitive("row")); add(JsonPrimitive("col")) })
+                            put("additionalProperties", false)
+                        }
+                    }
+                },
+                required = listOf("points"),
+            ),
+        ) { configuration.awaitMeshLoaded(); updatePoints(it) }
 
         addTool(
             name = "add_color",
@@ -104,6 +140,29 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 required = listOf("hex"),
             ),
         ) { configuration.awaitMeshLoaded(); addColor(it) }
+
+        addTool(
+            name = "set_grid",
+            description = "Changes the grid size and/or blur as one undoable edit; pass at least one. Omitted fields " +
+                "keep their current value. Changing " +
+                "rows or columns replaces every point with an evenly spaced grid, so call get_mesh again afterwards.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("rows") {
+                        put("type", "integer"); put("minimum", MIN_GRID_SIZE); put("maximum", MAX_GRID_SIZE)
+                        put("description", "Rows, $MIN_GRID_SIZE to $MAX_GRID_SIZE")
+                    }
+                    putJsonObject("cols") {
+                        put("type", "integer"); put("minimum", MIN_GRID_SIZE); put("maximum", MAX_GRID_SIZE)
+                        put("description", "Columns, $MIN_GRID_SIZE to $MAX_GRID_SIZE")
+                    }
+                    putJsonObject("blur") {
+                        put("type", "number"); put("minimum", 0); put("maximum", 1)
+                        put("description", "Blur level, 0 to 1")
+                    }
+                },
+            ),
+        ) { configuration.awaitMeshLoaded(); setGrid(it) }
 
         addTool(
             name = "undo",
@@ -144,7 +203,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             put("canvasWidth", meshState.canvasWidth)
             put("canvasHeight", meshState.canvasHeight)
             put("blurLevel", meshState.blurLevel)
-            put("constrainEdgePoints", configuration.uiState.value.constrainEdgePoints)
+            put("constrainEdgePoints", configuration.constrainEdgePoints)
             put("colors", buildJsonArray {
                 colors.forEach { color ->
                     add(buildJsonObject {
@@ -177,36 +236,118 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         updatePoint(request, paletteIds)
     }
 
-    private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult = run {
-        val args = request.arguments ?: JsonObject(emptyMap())
-        val row = args.int("row") ?: return@run error("row is required")
-        val col = args.int("col") ?: return@run error("col is required")
-        val points = configuration.meshPoints
+    private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult {
+        val edit = try {
+            parsePointEdit(request.arguments ?: JsonObject(emptyMap()), configuration.meshPoints, paletteIds)
+        } catch (e: InvalidArgument) {
+            return error(e.message)
+        }
+        configuration.updateMeshPoint(edit.row, edit.col, edit.point)
+        val (offset, newColorId) = configuration.meshPoints[edit.row][edit.col]
+        return CallToolResult(
+            content = listOf(TextContent("Point (${edit.row}, ${edit.col}) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
+        )
+    }
+
+    /** Validates every edit before applying any, so a bad entry leaves the mesh untouched. */
+    private suspend fun updatePoints(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
+        try {
+            request.arguments?.requireOnly(setOf("points"), "update_points")
+        } catch (e: InvalidArgument) {
+            return@withContext error(e.message)
+        }
+        val entries = (request.arguments?.get("points") as? JsonArray)
+            ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?}")
+        if (entries.isEmpty()) return@withContext error("points is empty; pass at least one {row, col, x?, y?, colorId?}")
+        if (entries.size > MAX_BATCH_POINTS) {
+            return@withContext error("points has ${entries.size} entries; the limit is $MAX_BATCH_POINTS, one per point of the largest grid")
+        }
+        val paletteIds = configuration.palette().map { it.uid }.toSet()
+        val constrainEdges = configuration.constrainEdgePoints
+        // Each entry is read against the points as the entries before it leave them, as separate update_point
+        // calls would be; updateMeshPoints then replays the same edits onto the mesh as one undo step.
+        var points: List<List<Pair<Offset, Long>>> = configuration.meshPoints.toList()
+        val edits = entries.mapIndexed { index, entry ->
+            val args = entry as? JsonObject ?: return@withContext error("points[$index] must be an object")
+            val edit = try {
+                parsePointEdit(args, points, paletteIds)
+            } catch (e: InvalidArgument) {
+                return@withContext error("points[$index]: ${e.message}")
+            }
+            points = points.withUpdatedMeshPoint(edit.row, edit.col, edit.point, constrainEdges)
+            edit
+        }
+        val changed = configuration.updateMeshPoints(edits)
+        // Read back from the mesh, so the caller sees where edge constraints kept a point.
+        val edited = buildJsonArray {
+            edits.map { it.row to it.col }.distinct().forEach { (row, col) ->
+                val (offset, colorId) = configuration.meshPoints[row][col]
+                add(buildJsonObject {
+                    put("row", row)
+                    put("col", col)
+                    put("x", offset.x)
+                    put("y", offset.y)
+                    put("colorId", colorId)
+                })
+            }
+        }
+        val summary = if (changed) {
+            "Updated ${edited.size} points as one edit"
+        } else {
+            "No change: the points already had these values, so there is nothing to undo"
+        }
+        CallToolResult(content = listOf(TextContent("$summary. The edited points are now: $edited")))
+    }
+
+    /** Reads the edit that [args] describe, checking it against [points] and [paletteIds], or throws [InvalidArgument]. */
+    private fun parsePointEdit(args: JsonObject, points: List<List<Pair<Offset, Long>>>, paletteIds: Set<Long>): MeshPointEdit {
+        args.requireOnly(POINT_EDIT_FIELDS, "a point edit")
+        val row = args.optionalInt("row") ?: throw InvalidArgument("row is required")
+        val col = args.optionalInt("col") ?: throw InvalidArgument("col is required")
         if (row !in points.indices || col !in points[row].indices) {
-            return@run error("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
+            throw InvalidArgument("No point at row $row, col $col; the grid has ${points.size} rows and ${points.firstOrNull()?.size ?: 0} columns")
         }
 
         val (current, currentColorId) = points[row][col]
         // Validate only what the caller sent, so echoing a point's current values back always works,
         // including the transparent ID of a deleted color or an offset typed outside 0–1 in the side panel.
-        val requestedColorId = args.long("colorId")
+        val requestedColorId = args.optionalLong("colorId")
         if (requestedColorId != null && requestedColorId != currentColorId && requestedColorId !in paletteIds) {
-            return@run error("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
+            throw InvalidArgument("No color with ID $requestedColorId; call get_mesh for color IDs or add_color to create one")
         }
-        val requestedX = args.float("x")
-        val requestedY = args.float("y")
-        if (requestedX?.let { it !in 0f..1f } == true || requestedY?.let { it !in 0f..1f } == true) {
-            return@run error("x and y must be between 0 and 1")
+        val requestedX = args.optionalFloat("x")
+        val requestedY = args.optionalFloat("y")
+        if (requestedX.isOutOfRange(current.x) || requestedY.isOutOfRange(current.y)) {
+            throw InvalidArgument("x and y must be between 0 and 1")
         }
-        val colorId = requestedColorId ?: currentColorId
         val x = requestedX ?: current.x
         val y = requestedY ?: current.y
+        return MeshPointEdit(row, col, Offset(x, y) to (requestedColorId ?: currentColorId))
+    }
 
-        configuration.updateMeshPoint(row, col, Offset(x, y) to colorId)
-        val (offset, newColorId) = configuration.meshPoints[row][col]
-        CallToolResult(
-            content = listOf(TextContent("Point ($row, $col) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
-        )
+    private suspend fun setGrid(request: CallToolRequest): CallToolResult {
+        val args = request.arguments ?: JsonObject(emptyMap())
+        val (rows, cols, blur) = try {
+            // An unknown field such as a misspelled cols must not let the rest of this destructive edit through.
+            args.requireOnly(setOf("rows", "cols", "blur"), "set_grid")
+            Triple(args.optionalInt("rows"), args.optionalInt("cols"), args.optionalFloat("blur"))
+        } catch (e: InvalidArgument) {
+            return error(e.message)
+        }
+        if (rows?.let { it !in MIN_GRID_SIZE..MAX_GRID_SIZE } == true || cols?.let { it !in MIN_GRID_SIZE..MAX_GRID_SIZE } == true) {
+            return error("rows and cols must be between $MIN_GRID_SIZE and $MAX_GRID_SIZE")
+        }
+        if (blur?.let { it !in 0f..1f } == true) return error("blur must be between 0 and 1")
+        if (rows == null && cols == null && blur == null) return error("Pass at least one of rows, cols, and blur")
+
+        return withContext(Dispatchers.Main) {
+            val changed = configuration.setGrid(rows, cols, blur)
+            val state = configuration.meshState.value
+            val grid = "${state.rows}×${state.cols} with blur ${state.blurLevel}"
+            CallToolResult(
+                content = listOf(TextContent(if (changed) "The grid is now $grid" else "No change: the grid is already $grid"))
+            )
+        }
     }
 
     private suspend fun undoOrRedo(redo: Boolean): CallToolResult = withContext(Dispatchers.Main) {
@@ -235,7 +376,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     }
 
     private suspend fun renderPng(request: CallToolRequest): CallToolResult {
-        val scale = request.arguments?.int("scale") ?: 1
+        val scale = try {
+            request.arguments?.optionalInt("scale") ?: 1
+        } catch (e: InvalidArgument) {
+            return error(e.message)
+        }
         if (scale !in 1..3) return error("scale must be 1, 2, or 3")
 
         val (meshState, points) = withContext(Dispatchers.Main) {
@@ -277,12 +422,55 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     private fun error(message: String) = CallToolResult(content = listOf(TextContent(message)), isError = true)
 
-    private fun JsonObject.int(key: String) = (get(key) as? JsonPrimitive)?.intOrNull
-    private fun JsonObject.long(key: String) = (get(key) as? JsonPrimitive)?.longOrNull
-    private fun JsonObject.float(key: String) = (get(key) as? JsonPrimitive)?.floatOrNull
+    /** A tool argument the tool can't use; the tool reports [message] and changes nothing. */
+    private class InvalidArgument(override val message: String) : Exception(message)
+
+    // Strict readers: an absent or null field is null, and a field that is present but not a number of the right
+    // kind, such as a string, a boolean, or a fraction where an integer belongs, is an InvalidArgument.
+    private fun JsonObject.optionalInt(key: String) =
+        optionalNumber(key, "an integer") { it.integerOrNull()?.takeIf { value -> value in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt() }
+    private fun JsonObject.optionalLong(key: String) = optionalNumber(key, "an integer") { it.integerOrNull() }
+    private fun JsonObject.optionalFloat(key: String) = optionalNumber(key, "a number") { it.floatOrNull }
+
+    private inline fun <T : Any> JsonObject.optionalNumber(key: String, kind: String, read: (JsonPrimitive) -> T?): T? {
+        val value = get(key)?.takeUnless { it is JsonNull } ?: return null
+        return (value as? JsonPrimitive)?.takeUnless { it.isString }?.let(read) ?: throw InvalidArgument("$key must be $kind")
+    }
+
+    /**
+     * An integer, including one a client wrote with a zero fraction such as 2.0, as JSON Schema allows. Reads the
+     * number's exact decimal value, so a fraction that survives as a literal is rejected.
+     *
+     * The MCP SDK re-encodes number literals before a handler sees them, which writes them as a Long or a Double,
+     * so 2.0000000000000001 arrives as 2.0 and is deliberately accepted as an integer: it is 2 in IEEE-754, and
+     * rejecting it would mean rejecting 2.0 too or reading the raw request ahead of the SDK.
+     */
+    private fun JsonPrimitive.integerOrNull(): Long? {
+        val value = content.toBigDecimalOrNull()?.stripTrailingZeros()?.takeIf { it.scale() <= 0 } ?: return null
+        return try {
+            value.longValueExact()
+        } catch (e: ArithmeticException) {
+            null
+        }
+    }
+
+    /** Throws [InvalidArgument] for any field outside [fields], naming [taker] as what takes them. */
+    private fun JsonObject.requireOnly(fields: Set<String>, taker: String) {
+        val unknown = keys - fields
+        if (unknown.isNotEmpty()) throw InvalidArgument("Unknown field ${unknown.joinToString()}; $taker takes ${fields.joinToString()}")
+    }
+
+    /** Whether a requested coordinate is outside 0–1; echoing the [current] one back is always allowed. */
+    private fun Float?.isOutOfRange(current: Float) = this != null && this != current && this !in 0f..1f
 
     companion object {
         const val DEFAULT_PORT = 7777
         private const val MAX_RENDER_SIDE = 8192
+
+        // update_points runs on the UI thread, so bound its work. One entry per point of the largest grid is
+        // enough to edit every point once; a longer batch must repeat points, which only adds UI-thread work.
+        const val MAX_BATCH_POINTS = MAX_GRID_SIZE * MAX_GRID_SIZE
+
+        private val POINT_EDIT_FIELDS = setOf("row", "col", "x", "y", "colorId")
     }
 }

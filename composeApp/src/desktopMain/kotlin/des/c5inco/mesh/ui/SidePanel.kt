@@ -53,6 +53,8 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import data.DimensionMode
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
 import des.c5inco.mesh.data.Notifications
@@ -339,8 +341,8 @@ fun SidePanel(
                         value = totalRows,
                         enabled = true,
                         paramName = "Rows",
-                        min = 2,
-                        max = 10,
+                        min = MIN_GRID_SIZE,
+                        max = MAX_GRID_SIZE,
                         onUpdate = onUpdateTotalRows,
                         modifier = Modifier
                             .weight(1f)
@@ -351,8 +353,8 @@ fun SidePanel(
                         value = totalCols,
                         enabled = true,
                         paramName = "Cols",
-                        min = 2,
-                        max = 10,
+                        min = MIN_GRID_SIZE,
+                        max = MAX_GRID_SIZE,
                         onUpdate = onUpdateTotalCols,
                         modifier = Modifier
                             .weight(1f)

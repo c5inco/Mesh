@@ -1,6 +1,7 @@
 package des.c5inco.mesh.mcp
 
 import androidx.compose.ui.geometry.Offset
+import data.MAX_GRID_SIZE
 import des.c5inco.mesh.data.AppConfiguration
 import des.c5inco.mesh.testing.FakeDataRepository
 import io.ktor.client.HttpClient
@@ -100,6 +101,244 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `set_grid resizes the grid and sets the blur as one undo step`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        callOk("set_grid", mapOf("rows" to 5, "cols" to 6, "blur" to 0.2))
+
+        val mesh = getMesh()
+        assertEquals(5 to 6, mesh.int("rows") to mesh.int("cols"))
+        assertEquals(30, mesh["points"]!!.jsonArray.size)
+        assertEquals(0.2f, mesh["blurLevel"]!!.jsonPrimitive.float)
+
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+        assertEquals(Triple(3, 4, 0f), configuration.meshState.value.let { Triple(it.rows, it.cols, it.blurLevel) })
+        assertEquals(false, configuration.canUndo.value, "set_grid recorded more than one undo step")
+    }
+
+    @Test
+    fun `quick blur-only set_grid calls are separate undo steps`() = runBlocking {
+        callOk("set_grid", mapOf("blur" to 0.2))
+        callOk("set_grid", mapOf("blur" to 0.4))
+
+        callOk("undo", emptyMap())
+        assertEquals(0.2f, configuration.meshState.value.blurLevel)
+        callOk("undo", emptyMap())
+        assertEquals(0f, configuration.meshState.value.blurLevel)
+    }
+
+    @Test
+    fun `set_grid rejects out-of-range values without changing anything`() = runBlocking {
+        val before = configuration.meshState.value
+
+        assertEquals(true, client.callTool("set_grid", mapOf("rows" to MAX_GRID_SIZE + 1)).isError)
+        assertEquals(true, client.callTool("set_grid", mapOf("cols" to 4, "blur" to 1.5)).isError)
+        assertEquals(before, configuration.meshState.value)
+    }
+
+    @Test
+    fun `update_points applies every edit as one undo step and reports where each point ended up`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        val result = callOk(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                    mapOf("row" to 1, "col" to 2, "y" to 0.6),
+                    mapOf("row" to 0, "col" to 1, "x" to 0.4, "y" to 0.5),
+                )
+            ),
+        )
+
+        assertEquals(0.25f to 3L, configuration.meshPoints[1][1].let { it.first.x to it.second })
+        assertEquals(0.6f, configuration.meshPoints[1][2].first.y)
+        assertEquals(Offset(0.4f, 0f), configuration.meshPoints[0][1].first, "Edge points stay on their edge")
+
+        val reported = reportedPoints(result).associateBy { it.int("row") to it.int("col") }
+        assertEquals(setOf(1 to 1, 1 to 2, 0 to 1), reported.keys)
+        val edge = reported.getValue(0 to 1)
+        assertEquals(listOf(0.4f, 0f), listOf(edge["x"]!!.jsonPrimitive.float, edge["y"]!!.jsonPrimitive.float))
+        assertEquals(3L, reported.getValue(1 to 1)["colorId"]!!.jsonPrimitive.long)
+
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+    }
+
+    @Test
+    fun `update_points applies repeated edits to one point in order, like separate update_point calls`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        callOk(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                    mapOf("row" to 1, "col" to 1, "y" to 0.6),
+                )
+            ),
+        )
+
+        assertEquals(Offset(0.25f, 0.6f) to 3L, configuration.meshPoints[1][1])
+
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+    }
+
+    @Test
+    fun `update_points changes nothing when any entry is invalid`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        val invalidEntries = listOf(
+            mapOf("row" to 9, "col" to 0, "x" to 0.5),
+            mapOf("row" to 1, "col" to 2, "x" to 1.5),
+            mapOf("row" to 2, "col" to 1, "colorId" to 99),
+        )
+        for (position in 0..2) {
+            val entries = mutableListOf<Map<String, Any>>(
+                mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                mapOf("row" to 1, "col" to 2, "y" to 0.6),
+            )
+            entries.add(position, invalidEntries[position])
+            val result = client.callTool("update_points", mapOf("points" to entries))
+
+            assertEquals(true, result.isError)
+            assertTrue(result.text().startsWith("points[$position]:"), result.text())
+            assertEquals(before, configuration.meshPoints.toList())
+        }
+        assertEquals(false, configuration.canUndo.value, "A rejected batch records no undo step")
+    }
+
+    @Test
+    fun `update_points rejects a batch over the advertised limit without changing anything`() = runBlocking {
+        val schema = client.listTools().tools.single { it.name == "update_points" }.inputSchema
+        val maxItems = schema.properties!!["points"]!!.jsonObject["maxItems"]!!.jsonPrimitive.content.toInt()
+        assertEquals(MAX_GRID_SIZE * MAX_GRID_SIZE, maxItems)
+        assertEquals("1", schema.properties!!["points"]!!.jsonObject["minItems"]!!.jsonPrimitive.content)
+        val items = schema.properties!!["points"]!!.jsonObject["items"]!!.jsonObject
+        assertEquals("false", items["additionalProperties"]!!.jsonPrimitive.content)
+
+        val meshState = configuration.meshState.value
+        val points = configuration.meshPoints.toList()
+        val tooMany = List(maxItems + 1) { mapOf("row" to 1, "col" to 1, "x" to 0.5) }
+        val result = client.callTool("update_points", mapOf("points" to tooMany))
+
+        assertEquals(true, result.isError)
+        assertTrue(result.text().contains("the limit is $maxItems"), result.text())
+        assertEquals(meshState, configuration.meshState.value)
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(false, configuration.canUndo.value, "A rejected batch records no undo step")
+
+        callOk("update_points", mapOf("points" to tooMany.drop(1)))
+        assertEquals(0.5f, configuration.meshPoints[1][1].first.x)
+    }
+
+    @Test
+    fun `update_points and set_grid report no change instead of an edit that undo would skip`() = runBlocking {
+        // A point the side panel placed outside 0 to 1 must echo back like any other.
+        withContext(Dispatchers.Main) { configuration.updateMeshPoint(1, 1, Offset(2f, 0.5f) to 2L) }
+        val points = configuration.meshPoints.toList()
+        val meshState = configuration.meshState.value
+
+        val echo = getMesh()["points"]!!.jsonArray.map { it.jsonObject.toMap() }
+        val unchanged = callOk("update_points", mapOf("points" to echo)).text()
+        assertTrue(unchanged.startsWith("No change"), unchanged)
+        assertTrue(callOk("set_grid", mapOf("rows" to 3, "cols" to 4)).text().startsWith("No change"))
+
+        assertEquals(true, client.callTool("update_points", mapOf("points" to emptyList<Any>())).isError)
+        assertEquals(true, client.callTool("set_grid", emptyMap()).isError)
+        assertEquals(true, client.callTool("set_grid", mapOf("rows" to null, "blur" to null)).isError)
+
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(meshState, configuration.meshState.value)
+        // Only the side panel's edit is left to undo.
+        callOk("undo", emptyMap())
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `unknown fields in a point edit are rejected, and nothing changes`() = runBlocking {
+        val points = configuration.meshPoints.toList()
+
+        val single = client.callTool("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.4, "color" to 3))
+        assertEquals(true, single.isError)
+        assertTrue(single.text().contains("Unknown field color"), single.text())
+
+        val batch = client.callTool(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "X" to 0.5),
+                )
+            ),
+        )
+        assertEquals(true, batch.isError)
+        assertTrue(batch.text().startsWith("points[1]: Unknown field X"), batch.text())
+
+        // A misspelled field at the top level must not let the rest of the call through either.
+        val misspelled = client.callTool("set_grid", mapOf("rows" to 5, "colums" to 6))
+        assertEquals(true, misspelled.isError)
+        assertTrue(misspelled.text().startsWith("Unknown field colums"), misspelled.text())
+        val extra = client.callTool("update_points", mapOf("points" to listOf(mapOf("row" to 1, "col" to 1, "x" to 0.25)), "dryRun" to true))
+        assertEquals(true, extra.isError)
+        assertTrue(extra.text().startsWith("Unknown field dryRun"), extra.text())
+
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `null fields count as absent and integral doubles count as integers`() = runBlocking {
+        val (pointBefore, colorBefore) = configuration.meshPoints[1][1]
+        callOk("update_point", mapOf("row" to 1.0, "col" to 1, "x" to 0.4, "y" to null, "colorId" to null))
+        assertEquals(Offset(0.4f, pointBefore.y) to colorBefore, configuration.meshPoints[1][1])
+
+        val xBefore = configuration.meshPoints[1][2].first.x
+        callOk("update_points", mapOf("points" to listOf(mapOf("row" to 1, "col" to 2.0, "x" to null, "y" to 0.6, "colorId" to 3.0))))
+        assertEquals(Offset(xBefore, 0.6f) to 3L, configuration.meshPoints[1][2])
+
+        callOk("set_grid", mapOf("rows" to 5.0, "cols" to null, "blur" to null))
+        assertEquals(5 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
+    fun `malformed numbers are rejected rather than ignored, and nothing changes`() = runBlocking {
+        val meshState = configuration.meshState.value
+        val points = configuration.meshPoints.toList()
+
+        val calls = listOf(
+            "set_grid" to mapOf("rows" to 5, "cols" to 2.5),
+            "set_grid" to mapOf("rows" to 5, "blur" to "0.5"),
+            "set_grid" to mapOf("rows" to true),
+            "set_grid" to mapOf("rows" to 5, "cols" to 3_000_000_000L),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 1e300),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to "0.9", "y" to 0.6),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to "3"),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 3.5),
+            "update_points" to mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "x" to "0.4"),
+                )
+            ),
+            "update_points" to mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "colorId" to "3"),
+                )
+            ),
+        )
+        for ((name, arguments) in calls) {
+            val result = client.callTool(name, arguments)
+            assertEquals(true, result.isError, "$name $arguments: ${result.text()}")
+            assertTrue(Regex("must be (an integer|a number)").containsMatchIn(result.text()), result.text())
+        }
+
+        assertEquals(meshState, configuration.meshState.value)
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
     fun `update_point rejects an unknown color without changing the point`() = runBlocking {
         val result = client.callTool("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 99))
 
@@ -138,6 +377,15 @@ class MeshMcpServerTest {
         assertEquals(true, client.callTool("render_png", mapOf("scale" to 2)).isError)
         callOk("render_png", mapOf("scale" to 1))
         Unit
+    }
+
+    @Test
+    fun `render_png rejects a malformed scale instead of rendering at 1x`() = runBlocking {
+        for (scale in listOf(2.5, true, "2")) {
+            assertEquals(true, client.callTool("render_png", mapOf("scale" to scale)).isError, "scale $scale")
+        }
+        val image = callOk("render_png", mapOf("scale" to null)).content.filterIsInstance<ImageContent>().single()
+        assertEquals(640, ImageIO.read(ByteArrayInputStream(Base64.decode(image.data))).width)
     }
 
     @Test
@@ -191,6 +439,10 @@ class MeshMcpServerTest {
     private suspend fun getMesh(): JsonObject = Json.parseToJsonElement(callOk("get_mesh", emptyMap()).text()).jsonObject
 
     private fun CallToolResult.text() = content.filterIsInstance<TextContent>().joinToString { it.text }
+
+    /** The points update_points reports after "now: ". */
+    private fun reportedPoints(result: CallToolResult) =
+        Json.parseToJsonElement(result.text().substringAfter("now: ")).jsonArray.map { it.jsonObject }
 
     private fun JsonObject.int(key: String) = get(key)!!.jsonPrimitive.content.toInt()
 

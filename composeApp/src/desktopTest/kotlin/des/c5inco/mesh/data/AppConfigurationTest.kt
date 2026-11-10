@@ -2,10 +2,13 @@ package des.c5inco.mesh.data
 
 import androidx.compose.ui.geometry.Offset
 import data.DocumentColor
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import data.MeshDocument
 import data.MeshState
 import data.Session
 import data.TRANSPARENT_COLOR_ID
+import data.legacyMeshDocument
 import data.meshDocumentOf
 import des.c5inco.mesh.testing.FakeDataRepository
 import des.c5inco.mesh.testing.fakePresetColors
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import model.MeshPoint
 import model.SavedColor
 import model.defaultMeshPointGrid
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -122,6 +126,29 @@ class AppConfigurationTest {
         configuration.undo()
         assertEquals(3, configuration.meshPoints.size)
         assertEquals(3, configuration.meshState.value.rows)
+    }
+
+    @Test
+    fun `setGrid with a size or blur out of range changes nothing`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val points = configuration.meshPoints.toList()
+        val meshState = configuration.meshState.value
+
+        for ((rows, cols, blur) in listOf(
+            Triple(MIN_GRID_SIZE - 1, null, null),
+            Triple(null, MAX_GRID_SIZE + 1, null),
+            Triple(5, 5, 1.5f),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) { configuration.setGrid(rows, cols, blur) }
+        }
+
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(meshState, configuration.meshState.value)
+        assertFalse(configuration.canUndo.value)
+        assertFalse(configuration.document.value.modified)
+        // The side panel's controls still clamp instead.
+        configuration.updateTotalRows(MAX_GRID_SIZE + 5)
+        assertEquals(MAX_GRID_SIZE, configuration.meshPoints.size)
     }
 
     @Test
@@ -397,6 +424,19 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `a file with more rows than the editor allows doesn't open`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val row = List(2) { """{"x": 0.5, "y": 0.5, "color": null}""" }.joinToString(prefix = "[", postfix = "]")
+        documentFile.writeText("""{"points": ${List(MAX_GRID_SIZE + 1) { row }.joinToString(prefix = "[", postfix = "]")}}""")
+
+        val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
+        assertTrue(error.message!!.contains("$MIN_GRID_SIZE to $MAX_GRID_SIZE rows and columns; this one has ${MAX_GRID_SIZE + 1} × 2"), error.message)
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
+        assertEquals(DocumentStatus(), configuration.document.value)
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
     fun `the first launch migrates the saved mesh to a document and later launches reopen it`() = runBlocking {
         val legacyCustomColor = DocumentColor(red = 1, green = 2, blue = 3)
         val legacyMesh = defaultDocument().let { mesh ->
@@ -420,6 +460,20 @@ class AppConfigurationTest {
         val reopened = loadedConfiguration(nextLaunch)
         assertEquals(DocumentStatus(file = migratedFile, modified = false), reopened.document.value)
         assertEquals(listOf("My Mesh.mesh"), directory.list()!!.toList())
+    }
+
+    @Test
+    fun `the first launch still loads legacy points past the old grid limit`() = runBlocking {
+        // An old database could hold stray points past the 10 × 10 grid the old app allowed.
+        val strayPoints = (0 until 12).flatMap { row ->
+            (0 until 12).map { col -> MeshPoint(row = row, col = col, x = col / 11f, y = row / 11f, savedColorId = 1L) }
+        }
+        val legacyMesh = legacyMeshDocument(strayPoints, savedState = null, colors = fakePresetColors)
+        val migrated = loadedConfiguration(FakeDataRepository(documentsDirectory = directory, session = null, legacyMesh = legacyMesh))
+
+        assertEquals(List(10) { 10 }, migrated.meshPoints.map { it.size })
+        assertEquals(Offset(9 / 11f, 9 / 11f), migrated.meshPoints[9][9].first)
+        assertEquals(File(directory, "My Mesh.mesh"), migrated.document.value.file)
     }
 
     @Test

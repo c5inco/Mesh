@@ -52,6 +52,10 @@ data class MeshDocument(
         require(points.size >= 2 && points.all { it.size >= 2 && it.size == points[0].size }) {
             "A mesh needs a rectangular grid of at least 2 × 2 points"
         }
+        // The editor, set_grid, and update_points' batch limit all assume this range.
+        require(points.size in MIN_GRID_SIZE..MAX_GRID_SIZE && points[0].size in MIN_GRID_SIZE..MAX_GRID_SIZE) {
+            "A mesh can have $MIN_GRID_SIZE to $MAX_GRID_SIZE rows and columns; this one has ${points.size} × ${points[0].size}"
+        }
     }
 
     fun encode(): String = json.encodeToString(serializer(), this)
@@ -155,7 +159,10 @@ fun legacyMeshDocument(points: List<MeshPoint>, savedState: MeshState?, colors: 
     val colorIds = colors.map(SavedColor::uid)
     val rows = state.rows.coerceIn(2, 10)
     val cols = state.cols.coerceIn(2, 10)
-    val grid = points.toOffsetGrid().takeIf { it.size >= 2 && it[0].size >= 2 }
+    // Points outside the old app's 10 × 10 limit, or at a negative index, are strays; dropping them keeps the
+    // grid within the size a document allows. Points that leave no 2 × 2 grid fall back to a fresh one.
+    val grid = points.filter { it.row in 0 until 10 && it.col in 0 until 10 }.toOffsetGrid()
+        .takeIf { it.size >= 2 && it[0].size >= 2 }
         ?: if (rows == 3 && cols == 4) defaultMeshPointGrid(colorIds) else generateMeshPointGrid(rows, cols, colorIds)
     return meshDocumentOf(
         meshState = state.copy(rows = grid.size, cols = grid[0].size),

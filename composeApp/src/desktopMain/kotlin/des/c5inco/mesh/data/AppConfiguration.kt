@@ -15,6 +15,8 @@ import com.squareup.kotlinpoet.asClassName
 import data.DataRepository
 import data.DimensionMode
 import data.FIRST_CUSTOM_COLOR_ID
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import data.MeshDocument
 import data.MeshState
 import data.OpenedMesh
@@ -39,6 +41,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -96,6 +99,9 @@ sealed interface DocumentChange {
     data class SaveFailed(val message: String, val revision: DocumentRevision) : DocumentChange
 }
 
+/** Moves and recolors the point at [row] and [col]; see [AppConfiguration.updateMeshPoints]. */
+data class MeshPointEdit(val row: Int, val col: Int, val point: Pair<Offset, Long>)
+
 /** The parts of the document that undo and redo restore. The grid size comes from [points]. */
 private data class EditSnapshot(
     val points: List<List<Pair<Offset, Long>>>,
@@ -112,7 +118,7 @@ private data class EditSnapshot(
 class AppConfiguration(
     private val repository: DataRepository,
     showPoints: Boolean = false,
-    private var constrainEdgePoints: Boolean = true,
+    constrainEdgePoints: Boolean = true,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -519,6 +525,9 @@ class AppConfiguration(
         )
     )
 
+    /** Whether point edits keep edge points on their edge; [uiState] holds it, and every edit reads it from here. */
+    val constrainEdgePoints: Boolean get() = uiState.value.constrainEdgePoints
+
     /** Adds a custom color to the open document and returns its ID. Call on the UI thread. */
     fun addColor(color: SavedColor): Long {
         val id = nextCustomColorId.getAndIncrement()
@@ -566,12 +575,9 @@ class AppConfiguration(
         if (meshState.value != before) markEdited()
     }
 
-    fun updateBlurLevel(level: Float) = recordEdit(group = "blur") {
-        meshState.update {
-            it.copy(
-                blurLevel = level
-            )
-        }
+    fun updateBlurLevel(level: Float) {
+        // Grouped so the steps of a slider drag merge into one undo step.
+        editGrid(rows = null, cols = null, blur = level.coerceIn(0f, 1f), group = "blur")
     }
 
     fun updateCanvasBackgroundColor(color: Long) = recordEdit {
@@ -579,22 +585,42 @@ class AppConfiguration(
         canvasBackgroundColor.update { color }
     }
 
-    fun updateTotalRows(rows: Int) = resize(rows = rows.coerceIn(2, 10), cols = meshState.value.cols)
+    fun updateTotalRows(rows: Int) {
+        editGrid(rows = rows.coerceIn(MIN_GRID_SIZE, MAX_GRID_SIZE), cols = null, blur = null, group = null)
+    }
 
-    fun updateTotalCols(cols: Int) = resize(rows = meshState.value.rows, cols = cols.coerceIn(2, 10))
+    fun updateTotalCols(cols: Int) {
+        editGrid(rows = null, cols = cols.coerceIn(MIN_GRID_SIZE, MAX_GRID_SIZE), blur = null, group = null)
+    }
 
-    private fun resize(rows: Int, cols: Int) {
+    /**
+     * Sets the grid size and blur, leaving null ones as they are, as a single undo step. A new size replaces
+     * the points with an evenly spaced grid. Returns whether the mesh changed. Call on the UI thread with rows
+     * and columns from [MIN_GRID_SIZE] to [MAX_GRID_SIZE] and blur from 0 to 1.
+     */
+    fun setGrid(rows: Int?, cols: Int?, blur: Float?): Boolean = editGrid(rows, cols, blur, group = null)
+
+    private fun editGrid(rows: Int?, cols: Int?, blur: Float?, group: String?): Boolean {
+        // Checked before anything changes: a size outside the range can't be rebuilt or saved as a document.
+        require(rows == null || rows in MIN_GRID_SIZE..MAX_GRID_SIZE) { "rows must be from $MIN_GRID_SIZE to $MAX_GRID_SIZE, not $rows" }
+        require(cols == null || cols in MIN_GRID_SIZE..MAX_GRID_SIZE) { "cols must be from $MIN_GRID_SIZE to $MAX_GRID_SIZE, not $cols" }
+        require(blur == null || blur in 0f..1f) { "blur must be from 0 to 1, not $blur" }
         if (meshPoints.isEmpty()) {
             // Applied when the mesh finishes loading.
-            resizedWhileLoading = true
+            if (rows != null || cols != null) resizedWhileLoading = true
             editedWhileLoading = true
-            meshState.update { it.copy(rows = rows, cols = cols) }
-            return
+            val before = meshState.getAndUpdate {
+                it.copy(rows = rows ?: it.rows, cols = cols ?: it.cols, blurLevel = blur ?: it.blurLevel)
+            }
+            return meshState.value != before
         }
-        recordEdit {
-            meshState.update { it.copy(rows = rows, cols = cols) }
-            if (rows != meshPoints.size || cols != meshPoints[0].size) {
-                val generatedPoints = generateMeshPointGrid(rows, cols, paletteIds())
+        return recordEdit(group) {
+            val state = meshState.updateAndGet {
+                it.copy(rows = rows ?: it.rows, cols = cols ?: it.cols, blurLevel = blur ?: it.blurLevel)
+            }
+            // Straight to the final size, so the points are rebuilt at most once.
+            if (state.rows != meshPoints.size || state.cols != meshPoints[0].size) {
+                val generatedPoints = generateMeshPointGrid(state.rows, state.cols, paletteIds())
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
             }
@@ -609,6 +635,24 @@ class AppConfiguration(
             constrainEdges = constrainEdgePoints,
         )
         meshPoints[row] = updatedPoints[row]
+    }
+
+    /**
+     * Applies several point edits, in order, as a single undo step, and returns whether the mesh changed.
+     * Call on the UI thread once the mesh has loaded; every edit must name a point in the grid.
+     */
+    fun updateMeshPoints(edits: List<MeshPointEdit>): Boolean {
+        require(meshPoints.isNotEmpty()) { "The mesh hasn't loaded yet" }
+        edits.forEach { (row, col) ->
+            require(row in meshPoints.indices && col in meshPoints[row].indices) { "No point at row $row, col $col" }
+        }
+        return recordEdit {
+            var points = meshPoints.toList()
+            edits.forEach { (row, col, point) ->
+                points = points.withUpdatedMeshPoint(row = row, col = col, point = point, constrainEdges = constrainEdgePoints)
+            }
+            points.forEachIndexed { row, updatedRow -> if (meshPoints[row] != updatedRow) meshPoints[row] = updatedRow }
+        }
     }
 
     fun distributeMeshPointsEvenly() = recordEdit {
@@ -716,21 +760,24 @@ class AppConfiguration(
         customColors = customColors.value,
     )
 
-    /** Runs [edit] and adds an undo step if it changed anything. */
-    private inline fun recordEdit(group: String? = null, edit: () -> Unit) {
+    /**
+     * Runs [edit] and adds an undo step if it changed anything. Returns whether it did; an edit before the
+     * document loads counts as a change, since the load applies it.
+     */
+    private inline fun recordEdit(group: String? = null, edit: () -> Unit): Boolean {
         // Before the document loads there is nothing to go back to.
         if (meshPoints.isEmpty()) {
             edit()
             editedWhileLoading = true
-            return
+            return true
         }
 
         val before = snapshot()
         edit()
-        if (snapshot() != before) {
-            history.record(before, group)
-            markEdited()
-        }
+        if (snapshot() == before) return false
+        history.record(before, group)
+        markEdited()
+        return true
     }
 
     private fun restore(snapshot: EditSnapshot) {
@@ -751,9 +798,8 @@ class AppConfiguration(
     }
 
     fun toggleConstrainingEdgePoints() {
-        constrainEdgePoints = !constrainEdgePoints
         uiState.update {
-            it.copy(constrainEdgePoints = constrainEdgePoints)
+            it.copy(constrainEdgePoints = !it.constrainEdgePoints)
         }
     }
 }

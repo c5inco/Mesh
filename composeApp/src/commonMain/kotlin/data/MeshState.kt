@@ -2,6 +2,10 @@ package data
 
 import kotlinx.serialization.Serializable
 
+/** The fewest and most rows or columns a mesh can have. More points cost more to draw and to edit. */
+const val MIN_GRID_SIZE = 2
+const val MAX_GRID_SIZE = 10
+
 enum class DimensionMode {
     Fixed,
     Fill
