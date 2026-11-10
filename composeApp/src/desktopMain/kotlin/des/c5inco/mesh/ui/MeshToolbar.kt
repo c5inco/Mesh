@@ -160,10 +160,14 @@ fun DecoratedWindowScope.MeshToolbar(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.align(Alignment.End).padding(end = 8.dp),
         ) {
+            // Weighted, so the export is measured first and the agent's label is the one that gives
+            // way. Jewel measures the title bar's children in order against what is left, so an
+            // unweighted agent here can take the export's whole allowance on a narrow window.
             AgentWidget(
                 state = mcpServerState,
                 onEnabledChange = onMcpServerEnabledChange,
                 onPortChange = onMcpServerPortChange,
+                modifier = Modifier.weight(1f, fill = false),
             )
             Divider(orientation = Orientation.Vertical, thickness = 1.dp, modifier = Modifier.height(20.dp))
             ExportWidget(
@@ -342,6 +346,7 @@ private fun AgentWidget(
     state: McpServerState?,
     onEnabledChange: (Boolean) -> Unit,
     onPortChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (state == null) return
     var popupOpen by remember { mutableStateOf(false) }
@@ -364,7 +369,7 @@ private fun AgentWidget(
         else -> StatusTone.Off
     }
 
-    Box {
+    Box(modifier = modifier) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -481,7 +486,9 @@ private fun ExportWidget(
             .border(1.dp, border, shape)
             .height(28.dp),
     ) {
-        Box {
+        // Weighted, so the Export button is measured first and the scale's pixel size is the label
+        // that gives way. Without it a narrow window wraps the size text and swallows the button.
+        Box(modifier = Modifier.weight(1f, fill = false)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -495,8 +502,14 @@ private fun ExportWidget(
                     .padding(horizontal = 8.dp)
                     .testTag(MeshTestTags.EXPORT_SCALE_MENU),
             ) {
-                Text("@${scale}x", style = JewelTheme.typography.labelTextStyle)
-                Text(pixelSize(canvasSize, scale), style = JewelTheme.typography.labelTextStyle, color = mutedColor())
+                Text("@${scale}x", style = JewelTheme.typography.labelTextStyle, maxLines = 1)
+                Text(
+                    pixelSize(canvasSize, scale),
+                    style = JewelTheme.typography.labelTextStyle,
+                    color = mutedColor(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Icon(
                     key = AllIconsKeys.General.ChevronDown,
                     iconClass = AllIconsKeys::class.java,
