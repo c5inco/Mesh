@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -149,7 +150,7 @@ fun SidePanel(
 ) {
     val focusManager = LocalFocusManager.current
     // Kept here rather than in their items, so they survive those items scrolling out of view.
-    var showColorInput by remember { mutableStateOf(false) }
+    var colorInput by remember { mutableStateOf<ColorInputState?>(null) }
     var colorPendingDeletion by remember { mutableStateOf<SavedColor?>(null) }
     // One list for every point row, so rows whose point didn't change can skip recomposing.
     val availableColors = remember(presetColors, customColors) { presetColors + customColors }
@@ -207,7 +208,7 @@ fun SidePanel(
                         Text("Custom", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
                         Spacer(Modifier.width(8.dp))
                         IconButton(
-                            onClick = { showColorInput = true },
+                            onClick = { if (colorInput == null) colorInput = ColorInputState() },
                             modifier = Modifier
                                 .size(14.dp)
                                 .testTag(MeshTestTags.ADD_CUSTOM_COLOR),
@@ -219,11 +220,13 @@ fun SidePanel(
                             )
                         }
                     }
-                    if (showColorInput) {
+                    val editingColor = colorInput
+                    if (editingColor != null) {
                         ColorInput(
-                            onCancel = { showColorInput = false },
+                            state = editingColor,
+                            onCancel = { colorInput = null },
                             onSubmit = {
-                                showColorInput = false
+                                colorInput = null
                                 onAddColor(it)
                             },
                             modifier = Modifier.padding(vertical = 8.dp),
@@ -245,7 +248,7 @@ fun SidePanel(
                                         .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
                                         // Until the mesh loads, its points can't be checked or cleared.
                                         .clickable(enabled = meshPoints.isNotEmpty()) {
-                                            showColorInput = false
+                                            colorInput = null
                                             colorPendingDeletion = savedColor
                                         }
                                 )
@@ -658,20 +661,40 @@ private fun SectionHeader(
     }
 }
 
+/**
+ * The custom color editor's state. The panel keeps it while the editor is open, because the editor's list
+ * item is disposed whenever it scrolls out of view.
+ */
+@Stable
+private class ColorInputState {
+    var color: Color by mutableStateOf(Color.LightGray)
+    val textFieldState = TextFieldState(color.toHexStringNoHash(false))
+    var isColorValid by mutableStateOf(true)
+    var isFocused = false
+    val focusRequester = FocusRequester()
+
+    /** Focus the field when it's first shown, since the user just opened it; not when it scrolls back into view. */
+    var focusWhenShown = true
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ColorInput(
+    state: ColorInputState,
     onSubmit: (Color) -> Unit = {},
     onCancel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var color: Color by remember { mutableStateOf(Color.LightGray) }
-    val textFieldState = remember { TextFieldState() }
-    var isColorValid by remember { mutableStateOf(true) }
-    val focusRequester = remember { FocusRequester() }
+    var color by state::color
+    val textFieldState = state.textFieldState
+    var isColorValid by state::isColorValid
+    val focusRequester = state.focusRequester
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    LaunchedEffect(state) {
+        if (state.focusWhenShown) {
+            state.focusWhenShown = false
+            focusRequester.requestFocus()
+        }
         snapshotFlow { textFieldState.text }
             .collectLatest {
                 var text = it.toString()
@@ -730,7 +753,14 @@ private fun ColorInput(
             modifier = Modifier
                 .focusRequester(focusRequester)
                 .testTag(MeshTestTags.CUSTOM_COLOR_INPUT)
-                .onFocusChanged { validate() }
+                // Only when focus really moves: not when the field comes back into view, which would
+                // overwrite a half-typed color.
+                .onFocusChanged {
+                    if (it.isFocused != state.isFocused) {
+                        state.isFocused = it.isFocused
+                        validate()
+                    }
+                }
                 .onKeyEvent {
                     when (it.key) {
                         // Only on key down: the key-up can reach this field before it closes and add the color again.
