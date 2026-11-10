@@ -31,6 +31,7 @@ import model.MeshPoint
 import model.SavedColor
 import model.defaultMeshPointGrid
 import model.generateMeshPointGrid
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -522,14 +523,100 @@ class AppConfigurationTest {
     @Test
     fun `a file with more rows than the editor allows doesn't open`() = runBlocking {
         val configuration = loadedConfiguration()
-        val row = List(2) { """{"x": 0.5, "y": 0.5, "color": null}""" }.joinToString(prefix = "[", postfix = "]")
-        documentFile.writeText("""{"points": ${List(MAX_GRID_SIZE + 1) { row }.joinToString(prefix = "[", postfix = "]")}}""")
+        writeOversizedDocument(documentFile)
 
         val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
         assertTrue(error.message!!.contains("$MIN_GRID_SIZE to $MAX_GRID_SIZE rows and columns; this one has ${MAX_GRID_SIZE + 1} × 2"), error.message)
         assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
         assertEquals(DocumentStatus(), configuration.document.value)
         assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
+    fun `opening an unopenable file leaves the open document and the session it recorded alone`() = runBlocking {
+        val file = writeDocument(documentFile)
+        val repository = FakeDataRepository(
+            documentsDirectory = directory,
+            session = Session(lastDocument = file.absolutePath),
+        )
+        val configuration = loadedConfiguration(repository)
+        // Opening a document records it, so a failed open that touched the session would be visible here.
+        assertEquals(
+            Session(lastDocument = file.absolutePath),
+            withTimeout(5.seconds) { repository.savedSession.first { it != null } },
+        )
+
+        val oversized = writeOversizedDocument(File(directory, "OpenBig.mesh"))
+        assertEquals(DocumentChange.Failed, configuration.openDocument(oversized))
+
+        assertEquals(DocumentStatus(file = file, modified = false), configuration.document.value)
+        val message = withTimeout(5.seconds) {
+            Notifications.notificationFlow.first { it.startsWith("Couldn't open OpenBig.mesh") }
+        }
+        assertTrue(message.contains("$MAX_GRID_SIZE rows and columns"), message)
+        delay(500.milliseconds) // Sessions are written in the background.
+        // The session still names the open document, so the next launch reopens it, not the file that failed.
+        assertEquals(Session(lastDocument = file.absolutePath), repository.savedSession.value)
+    }
+
+    @Test
+    fun `a last document that can't open in this version isn't tried again next launch`() = runBlocking {
+        val file = writeOversizedDocument(File(directory, "Big.mesh"))
+        val bytes = file.readBytes()
+        val repository = FakeDataRepository(
+            documentsDirectory = directory,
+            session = Session(lastDocument = file.absolutePath),
+        )
+        val configuration = AppConfiguration(repository)
+        configuration.awaitMeshLoaded()
+
+        // The file is still rejected rather than trimmed; the app opens the default document instead.
+        assertEquals(defaultMeshPointGrid(fakePresetColors.map(SavedColor::uid)), configuration.meshPoints.toList())
+        assertEquals(DocumentStatus(), configuration.document.value)
+        // The session is cleared, so the next launch doesn't retry a file this version can never open.
+        val session = withTimeout(5.seconds) { repository.savedSession.first { it != null } }
+        assertEquals(Session(lastDocument = null), session)
+        // And nothing was written over the file the user still has.
+        assertArrayEquals(bytes, file.readBytes())
+        // The user is told why, though the file was read before the UI started collecting notifications.
+        val message = withTimeout(5.seconds) {
+            Notifications.notificationFlow.first { it.startsWith("Couldn't open Big.mesh") }
+        }
+        assertTrue(message.contains("$MAX_GRID_SIZE rows and columns"), message)
+
+        // The next launch reads the session this one recorded, so it opens a blank document too. That it
+        // records an empty session again is what tells the file apart from one this launch left for retrying.
+        val nextLaunchRepository = FakeDataRepository(documentsDirectory = directory, session = session)
+        val nextLaunch = loadedConfiguration(nextLaunchRepository)
+        assertEquals(DocumentStatus(), nextLaunch.document.value)
+        assertEquals(defaultMeshPointGrid(fakePresetColors.map(SavedColor::uid)), nextLaunch.meshPoints.toList())
+        assertEquals(Session(lastDocument = null), withTimeout(5.seconds) { nextLaunchRepository.savedSession.first { it != null } })
+        assertArrayEquals(bytes, file.readBytes())
+    }
+
+    @Test
+    fun `a last document from a newer version is dropped at startup like any other that can't open`() = runBlocking {
+        val file = File(directory, "Newer.mesh")
+        file.writeText("""{"version": ${MeshDocument.CURRENT_VERSION + 1}, "layers": []}""")
+        val bytes = file.readBytes()
+        val repository = FakeDataRepository(
+            documentsDirectory = directory,
+            session = Session(lastDocument = file.absolutePath),
+        )
+        val configuration = AppConfiguration(repository)
+        configuration.awaitMeshLoaded()
+
+        assertEquals(defaultMeshPointGrid(fakePresetColors.map(SavedColor::uid)), configuration.meshPoints.toList())
+        assertEquals(DocumentStatus(), configuration.document.value)
+        // Deliberately the same rule as for an oversized grid: a file this version can't read is dropped at
+        // startup whatever it needs, so one behaviour covers every unopenable document. Reopening the file in a
+        // build that knows the format is the way back to it, not keeping it as the last document forever.
+        assertEquals(Session(lastDocument = null), withTimeout(5.seconds) { repository.savedSession.first { it != null } })
+        assertArrayEquals(bytes, file.readBytes())
+        val message = withTimeout(5.seconds) {
+            Notifications.notificationFlow.first { it.startsWith("Couldn't open Newer.mesh") }
+        }
+        assertTrue(message.contains("needs a newer version"), message)
     }
 
     @Test
@@ -750,6 +837,12 @@ class AppConfigurationTest {
         .jsonObject.getValue("version").jsonPrimitive.int
 
     private fun fileVersion(file: File) = fileVersion(file.readText())
+
+    /** A file holding a grid larger than the editor allows, which [MeshDocument.decode] rejects. */
+    private fun writeOversizedDocument(file: File) = file.apply {
+        val row = List(2) { """{"x": 0.5, "y": 0.5, "color": null}""" }.joinToString(prefix = "[", postfix = "]")
+        writeText("""{"points": ${List(MAX_GRID_SIZE + 1) { row }.joinToString(prefix = "[", postfix = "]")}}""")
+    }
 
     private fun saved(file: File) = MeshDocument.decode(file.readText())
 
