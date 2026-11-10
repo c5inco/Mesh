@@ -577,7 +577,7 @@ class AppConfiguration(
 
     fun updateBlurLevel(level: Float) {
         // Grouped so the steps of a slider drag merge into one undo step.
-        editGrid(rows = null, cols = null, blur = level, group = "blur")
+        editGrid(rows = null, cols = null, blur = level.coerceIn(0f, 1f), group = "blur")
     }
 
     fun updateCanvasBackgroundColor(color: Long) = recordEdit {
@@ -595,11 +595,16 @@ class AppConfiguration(
 
     /**
      * Sets the grid size and blur, leaving null ones as they are, as a single undo step. A new size replaces
-     * the points with an evenly spaced grid. Returns whether the mesh changed. Call on the UI thread.
+     * the points with an evenly spaced grid. Returns whether the mesh changed. Call on the UI thread with rows
+     * and columns from [MIN_GRID_SIZE] to [MAX_GRID_SIZE] and blur from 0 to 1.
      */
     fun setGrid(rows: Int?, cols: Int?, blur: Float?): Boolean = editGrid(rows, cols, blur, group = null)
 
     private fun editGrid(rows: Int?, cols: Int?, blur: Float?, group: String?): Boolean {
+        // Checked before anything changes: a size outside the range can't be rebuilt or saved as a document.
+        require(rows == null || rows in MIN_GRID_SIZE..MAX_GRID_SIZE) { "rows must be from $MIN_GRID_SIZE to $MAX_GRID_SIZE, not $rows" }
+        require(cols == null || cols in MIN_GRID_SIZE..MAX_GRID_SIZE) { "cols must be from $MIN_GRID_SIZE to $MAX_GRID_SIZE, not $cols" }
+        require(blur == null || blur in 0f..1f) { "blur must be from 0 to 1, not $blur" }
         if (meshPoints.isEmpty()) {
             // Applied when the mesh finishes loading.
             if (rows != null || cols != null) resizedWhileLoading = true

@@ -159,7 +159,10 @@ fun legacyMeshDocument(points: List<MeshPoint>, savedState: MeshState?, colors: 
     val colorIds = colors.map(SavedColor::uid)
     val rows = state.rows.coerceIn(2, 10)
     val cols = state.cols.coerceIn(2, 10)
-    val grid = points.toOffsetGrid().takeIf { it.size >= 2 && it[0].size >= 2 }
+    // Points outside the old app's 10 × 10 limit, or at a negative index, are strays; dropping them keeps the
+    // grid within the size a document allows. Points that leave no 2 × 2 grid fall back to a fresh one.
+    val grid = points.filter { it.row in 0 until 10 && it.col in 0 until 10 }.toOffsetGrid()
+        .takeIf { it.size >= 2 && it[0].size >= 2 }
         ?: if (rows == 3 && cols == 4) defaultMeshPointGrid(colorIds) else generateMeshPointGrid(rows, cols, colorIds)
     return meshDocumentOf(
         meshState = state.copy(rows = grid.size, cols = grid[0].size),

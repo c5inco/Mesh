@@ -40,10 +40,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import model.SavedColor
@@ -51,8 +49,6 @@ import model.findColor
 import model.withUpdatedMeshPoint
 import org.jetbrains.skia.EncodedImageFormat
 import kotlin.io.encoding.Base64
-import kotlin.math.abs
-import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
@@ -87,7 +83,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         addTool(
             name = "update_point",
             description = "Moves and/or recolors the point at a row and column. Omitted fields keep their " +
-                "current value. When edge constraints are on (the default), edge points stay on their edge.",
+                "current value; fields other than row, col, x, y, and colorId are rejected. When edge constraints " +
+                "are on (the default), edge points stay on their edge.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("row") { put("type", "integer"); put("description", "Row index, from 0") }
@@ -151,9 +148,18 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 "rows or columns replaces every point with an evenly spaced grid, so call get_mesh again afterwards.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
-                    putJsonObject("rows") { put("type", "integer"); put("description", "Rows, $MIN_GRID_SIZE to $MAX_GRID_SIZE") }
-                    putJsonObject("cols") { put("type", "integer"); put("description", "Columns, $MIN_GRID_SIZE to $MAX_GRID_SIZE") }
-                    putJsonObject("blur") { put("type", "number"); put("description", "Blur level, 0 to 1") }
+                    putJsonObject("rows") {
+                        put("type", "integer"); put("minimum", MIN_GRID_SIZE); put("maximum", MAX_GRID_SIZE)
+                        put("description", "Rows, $MIN_GRID_SIZE to $MAX_GRID_SIZE")
+                    }
+                    putJsonObject("cols") {
+                        put("type", "integer"); put("minimum", MIN_GRID_SIZE); put("maximum", MAX_GRID_SIZE)
+                        put("description", "Columns, $MIN_GRID_SIZE to $MAX_GRID_SIZE")
+                    }
+                    putJsonObject("blur") {
+                        put("type", "number"); put("minimum", 0); put("maximum", 1)
+                        put("description", "Blur level, 0 to 1")
+                    }
                 },
             ),
         ) { configuration.awaitMeshLoaded(); setGrid(it) }
@@ -245,6 +251,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     /** Validates every edit before applying any, so a bad entry leaves the mesh untouched. */
     private suspend fun updatePoints(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
+        try {
+            request.arguments?.requireOnly(setOf("points"), "update_points")
+        } catch (e: InvalidArgument) {
+            return@withContext error(e.message)
+        }
         val entries = (request.arguments?.get("points") as? JsonArray)
             ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?}")
         if (entries.isEmpty()) return@withContext error("points is empty; pass at least one {row, col, x?, y?, colorId?}")
@@ -290,10 +301,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     /** Reads the edit that [args] describe, checking it against [points] and [paletteIds], or throws [InvalidArgument]. */
     private fun parsePointEdit(args: JsonObject, points: List<List<Pair<Offset, Long>>>, paletteIds: Set<Long>): MeshPointEdit {
-        val unknown = args.keys - POINT_EDIT_FIELDS
-        if (unknown.isNotEmpty()) {
-            throw InvalidArgument("Unknown field ${unknown.joinToString()}; a point edit takes ${POINT_EDIT_FIELDS.joinToString()}")
-        }
+        args.requireOnly(POINT_EDIT_FIELDS, "a point edit")
         val row = args.optionalInt("row") ?: throw InvalidArgument("row is required")
         val col = args.optionalInt("col") ?: throw InvalidArgument("col is required")
         if (row !in points.indices || col !in points[row].indices) {
@@ -320,6 +328,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     private suspend fun setGrid(request: CallToolRequest): CallToolResult {
         val args = request.arguments ?: JsonObject(emptyMap())
         val (rows, cols, blur) = try {
+            // An unknown field such as a misspelled cols must not let the rest of this destructive edit through.
+            args.requireOnly(setOf("rows", "cols", "blur"), "set_grid")
             Triple(args.optionalInt("rows"), args.optionalInt("cols"), args.optionalFloat("blur"))
         } catch (e: InvalidArgument) {
             return error(e.message)
@@ -428,11 +438,23 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     }
 
     /**
-     * An integer, including one a client wrote with a zero fraction such as 2.0, as JSON Schema allows. Integral
-     * doubles count only up to 2^53, where every integer still has an exact double.
+     * An integer, including one a client wrote with a zero fraction such as 2.0, as JSON Schema allows. Reads the
+     * number's exact decimal value, so 2.0000000000000001 isn't rounded to 2 on the way.
      */
-    private fun JsonPrimitive.integerOrNull(): Long? =
-        longOrNull ?: doubleOrNull?.takeIf { it.isFinite() && it == floor(it) && abs(it) <= MAX_EXACT_DOUBLE_INTEGER }?.toLong()
+    private fun JsonPrimitive.integerOrNull(): Long? {
+        val value = content.toBigDecimalOrNull()?.stripTrailingZeros()?.takeIf { it.scale() <= 0 } ?: return null
+        return try {
+            value.longValueExact()
+        } catch (e: ArithmeticException) {
+            null
+        }
+    }
+
+    /** Throws [InvalidArgument] for any field outside [fields], naming [taker] as what takes them. */
+    private fun JsonObject.requireOnly(fields: Set<String>, taker: String) {
+        val unknown = keys - fields
+        if (unknown.isNotEmpty()) throw InvalidArgument("Unknown field ${unknown.joinToString()}; $taker takes ${fields.joinToString()}")
+    }
 
     /** Whether a requested coordinate is outside 0–1; echoing the [current] one back is always allowed. */
     private fun Float?.isOutOfRange(current: Float) = this != null && this != current && this !in 0f..1f
@@ -446,6 +468,5 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         const val MAX_BATCH_POINTS = MAX_GRID_SIZE * MAX_GRID_SIZE
 
         private val POINT_EDIT_FIELDS = setOf("row", "col", "x", "y", "colorId")
-        private const val MAX_EXACT_DOUBLE_INTEGER = 9_007_199_254_740_992.0 // 2^53
     }
 }

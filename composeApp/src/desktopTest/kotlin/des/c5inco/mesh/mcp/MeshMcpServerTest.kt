@@ -272,7 +272,17 @@ class MeshMcpServerTest {
         )
         assertEquals(true, batch.isError)
         assertTrue(batch.text().startsWith("points[1]: Unknown field X"), batch.text())
+
+        // A misspelled field at the top level must not let the rest of the call through either.
+        val misspelled = client.callTool("set_grid", mapOf("rows" to 5, "colums" to 6))
+        assertEquals(true, misspelled.isError)
+        assertTrue(misspelled.text().startsWith("Unknown field colums"), misspelled.text())
+        val extra = client.callTool("update_points", mapOf("points" to listOf(mapOf("row" to 1, "col" to 1, "x" to 0.25)), "dryRun" to true))
+        assertEquals(true, extra.isError)
+        assertTrue(extra.text().startsWith("Unknown field dryRun"), extra.text())
+
         assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
         assertEquals(false, configuration.canUndo.value)
     }
 

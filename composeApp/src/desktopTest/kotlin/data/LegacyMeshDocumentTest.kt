@@ -34,6 +34,28 @@ class LegacyMeshDocumentTest {
     }
 
     @Test
+    fun `stray points past the old 10 by 10 limit or at a negative index are dropped`() {
+        val points = (-1..11).flatMap { row ->
+            (0..12).map { col -> MeshPoint(row = row, col = col, x = col / 12f, y = row / 12f, savedColorId = 2L) }
+        }
+
+        val document = legacyMeshDocument(points, MeshState(), presets)!!
+
+        assertEquals(List(10) { 10 }, document.points.map { it.size })
+        assertEquals(10 to 10, document.meshState.let { it.rows to it.cols })
+        assertEquals(DocumentPoint(9 / 12f, 9 / 12f, DocumentColor(80, 0, 0)), document.points[9][9])
+    }
+
+    @Test
+    fun `points that leave no 2 by 2 grid fall back to a fresh grid at the saved size`() {
+        val points = listOf(MeshPoint(row = 0, col = 0, x = 0f, y = 0f, savedColorId = 2L), MeshPoint(row = -3, col = 40, x = 0f, y = 0f, savedColorId = 2L))
+
+        val document = legacyMeshDocument(points, MeshState(rows = 5, cols = 6), presets)!!
+
+        assertEquals(List(5) { 6 }, document.points.map { it.size })
+    }
+
+    @Test
     fun `nothing saved means nothing to migrate`() {
         assertNull(legacyMeshDocument(emptyList(), savedState = null, colors = presets + custom))
     }
