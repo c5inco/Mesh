@@ -142,7 +142,7 @@ DMG never sits at the release path. Do not distribute an `.unverified` file.
 The equivalent manual commands are:
 
 ```bash
-DMG=composeApp/build/compose/binaries/main/dmg/Mesh-1.0.0.dmg
+DMG=composeApp/build/compose/binaries/main/dmg/Mesh-1.1.0.dmg
 ./gradlew :composeApp:packageDmg
 codesign --force --timestamp \
   --sign "Developer ID Application: Example Developer (TEAMID)" "$DMG"
