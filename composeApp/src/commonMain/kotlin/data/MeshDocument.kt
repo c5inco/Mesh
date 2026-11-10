@@ -3,6 +3,7 @@ package data
 import androidx.compose.ui.geometry.Offset
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
@@ -65,11 +66,15 @@ data class MeshDocument(
     }
 
     /**
-     * The format to write: 1 while the grid fits the old app's limit, which every build reads, and 2 once it
-     * doesn't, since only a build that reads larger grids can open it.
+     * The format to write: [FIRST_VERSION] while the grid fits the old app's limit, which every build reads,
+     * and [LARGE_GRID_VERSION] once it doesn't, since only a build that reads larger grids can open it.
      */
     private val version: Int
-        get() = if (points.size > LEGACY_MAX_GRID_SIZE || points[0].size > LEGACY_MAX_GRID_SIZE) 2 else 1
+        get() = if (points.size > LEGACY_MAX_GRID_SIZE || points[0].size > LEGACY_MAX_GRID_SIZE) {
+            LARGE_GRID_VERSION
+        } else {
+            FIRST_VERSION
+        }
 
     /** The file's text, with `version` first: a reader checks it before it decodes the rest. */
     fun encode(): String {
@@ -86,6 +91,16 @@ data class MeshDocument(
         const val CURRENT_VERSION = 2
         const val FILE_EXTENSION = "mesh"
 
+        /**
+         * The format Mesh wrote before larger grids. It is the oldest one, and what a file with no `version`
+         * key is taken to be: the formats after it are the ones that can gain fields a file like that has no
+         * value for.
+         */
+        private const val FIRST_VERSION = 1
+
+        /** The format for a mesh larger than the old 10 × 10 limit. */
+        private const val LARGE_GRID_VERSION = 2
+
         private val json = Json {
             prettyPrint = true
             encodeDefaults = true
@@ -96,10 +111,15 @@ data class MeshDocument(
         fun decode(text: String): MeshDocument {
             val element = json.parseToJsonElement(text)
             // Checked first, since a newer format may not decode as this one.
-            val version = element.jsonObject["version"]?.jsonPrimitive?.intOrNull ?: CURRENT_VERSION
+            val version = versionOf(element)
             require(version <= CURRENT_VERSION) { "This file needs a newer version of Mesh (format $version)" }
-            return json.decodeFromJsonElement(serializer(), element)
+            // The version isn't part of the document; it's derived from the grid when the file is written.
+            return json.decodeFromJsonElement(serializer(), JsonObject(element.jsonObject - "version"))
         }
+
+        /** The format [element] names; a file with no `version` key is the oldest one, [FIRST_VERSION]. */
+        internal fun versionOf(element: JsonElement): Int =
+            element.jsonObject["version"]?.jsonPrimitive?.intOrNull ?: FIRST_VERSION
     }
 }
 

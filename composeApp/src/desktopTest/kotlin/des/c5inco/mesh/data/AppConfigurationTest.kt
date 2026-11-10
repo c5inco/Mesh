@@ -420,14 +420,39 @@ class AppConfigurationTest {
     fun `a grid the old app's limit held is saved in format 1 and a larger one in format 2`() = runBlocking {
         val configuration = loadedConfiguration()
 
+        // An 11 × 10 document is written in format 2, and reads back as itself.
+        val large = documentWithGrid(11, 10)
+        assertEquals(2, fileVersion(large.encode()))
+        assertEquals(large, MeshDocument.decode(large.encode()))
+
         val versions = listOf(11 to 10, 10 to 11, 10 to 10, 64 to 64).map { (rows, cols) ->
             configuration.updateTotalRows(rows)
             configuration.updateTotalCols(cols)
             assertTrue(configuration.saveDocument(documentFile))
             fileVersion(documentFile)
         }
-
         assertEquals(listOf(2, 2, 1, 2), versions)
+
+        // The format 2 file this build wrote opens again, with its whole grid.
+        assertEquals(DocumentChange.Done, configuration.openDocument(documentFile))
+        assertEquals(64 to 64, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(List(64) { 64 }, configuration.meshPoints.map { it.size })
+    }
+
+    @Test
+    fun `a file with no version key reads as the first format`() = runBlocking {
+        val withVersion = defaultDocument().encode()
+        val withoutVersion = withVersion.replaceFirst(Regex("\\{\\s*\"version\": \\d+,"), "{")
+        assertFalse(withoutVersion.contains("\"version\""))
+
+        // The oldest format, so it reads as the same document the file naming format 1 does.
+        assertEquals(1, MeshDocument.versionOf(Json.parseToJsonElement(withoutVersion)))
+        assertEquals(MeshDocument.decode(withVersion), MeshDocument.decode(withoutVersion))
+
+        val file = File(directory, "NoVersion.mesh").apply { writeText(withoutVersion) }
+        val configuration = openedConfiguration(file)
+        assertEquals(DocumentStatus(file = file, modified = false), configuration.document.value)
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
     }
 
     @Test
@@ -684,9 +709,11 @@ class AppConfigurationTest {
         colors = fakePresetColors,
     )
 
-    /** The format named in [file], read as text rather than decoded, which drops the name. */
-    private fun fileVersion(file: File) = Json.parseToJsonElement(file.readText())
+    /** The format named in [text], read as a file's text rather than decoded, which drops the name. */
+    private fun fileVersion(text: String) = Json.parseToJsonElement(text)
         .jsonObject.getValue("version").jsonPrimitive.int
+
+    private fun fileVersion(file: File) = fileVersion(file.readText())
 
     private fun saved(file: File) = MeshDocument.decode(file.readText())
 
