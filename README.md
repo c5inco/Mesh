@@ -6,7 +6,7 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 
 ## Features and controls
 
-- **Grid:** Adjust between 2–10 rows and columns, or distribute points evenly.
+- **Grid:** Adjust between 2–64 rows and columns, or distribute points evenly.
 - **Control points:** Drag points on the canvas or edit `X`/`Y` offsets in the side panel. Double-click the canvas to hide or show points, and toggle edge constraints to lock perimeter points to the canvas bounds.
 - **Palette:** Add hex colors to the saved palette, remove unused ones, and assign colors per point.
 - **Canvas:** Configure canvas dimensions (fixed size or fill) and background color.

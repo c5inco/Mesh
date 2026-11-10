@@ -2,6 +2,7 @@ package des.c5inco.mesh.testing
 
 object MeshTestTags {
     const val APP = "mesh.app"
+    const val SIDE_PANEL = "mesh.side-panel"
     const val GRADIENT_CANVAS = "mesh.gradient-canvas"
     const val SHOW_POINTS = "mesh.show-points"
     const val ROWS_INPUT = "mesh.rows-input"
@@ -17,7 +18,9 @@ object MeshTestTags {
     const val NEW_DOCUMENT = "mesh.new-document"
     const val DOCUMENT_PROMPT = "mesh.document-prompt"
 
-    fun pointColor(row: Int, col: Int): String = "mesh.point-color-$row-$col"
+    const val POINT_COLOR_PREFIX = "mesh.point-color-"
+
+    fun pointColor(row: Int, col: Int): String = "$POINT_COLOR_PREFIX$row-$col"
 
     fun customColor(hex: String): String = "mesh.custom-color-$hex"
 }

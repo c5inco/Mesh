@@ -36,6 +36,10 @@ class MeshAppFixture(
     val automator: ComposeAutomator
         get() = _automator
 
+    /** The app's state, for setting up scenarios faster than driving the UI would. */
+    lateinit var configuration: AppConfiguration
+        private set
+
     /** The main window. */
     lateinit var window: Frame
         private set
@@ -62,7 +66,7 @@ class MeshAppFixture(
                     val configuration = remember {
                         AppConfiguration(
                             repository = AppDataRepository(),
-                        )
+                        ).also { this@MeshAppFixture.configuration = it }
                     }
 
                     exitFn = ::exitApplication

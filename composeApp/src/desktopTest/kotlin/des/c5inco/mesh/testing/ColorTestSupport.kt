@@ -5,7 +5,7 @@ import dev.sebastiano.spectre.core.ComposeAutomator
 import kotlin.time.Duration.Companion.seconds
 
 suspend fun ComposeAutomator.addCustomColor(hex: String) {
-    performSemanticsClick(waitForTestTag(MeshTestTags.ADD_CUSTOM_COLOR))
+    performSemanticsClick(waitForSidePanelTag(MeshTestTags.ADD_CUSTOM_COLOR))
     waitForVisualIdle()
 
     // The input refills its last valid color whenever its focus changes. In GUI runs focus sometimes
@@ -32,7 +32,7 @@ suspend fun ComposeAutomator.addCustomColor(hex: String) {
 }
 
 suspend fun ComposeAutomator.openPointColorDropdown(row: Int, col: Int) {
-    performSemanticsClick(waitForTestTag(MeshTestTags.pointColor(row, col)))
+    performSemanticsClick(waitForSidePanelTag(MeshTestTags.pointColor(row, col)))
     eventually(description = "point color dropdown menu") {
         refreshWindows()
         findByText("7766EE").firstOrNull()
