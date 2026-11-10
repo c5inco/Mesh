@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -68,6 +69,7 @@ import org.jetbrains.jewel.ui.theme.colorPalette
 import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.window.DecoratedWindowScope
 import org.jetbrains.jewel.window.TitleBar
+import org.jetbrains.jewel.window.utils.clientRegion
 import androidx.compose.ui.window.PopupPositionProvider
 import java.io.File
 
@@ -201,7 +203,7 @@ private fun DocumentWidget(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .toolbarButton(open = menuOpen) { menuOpen = true }
+                .toolbarButton(regionKey = "document", open = menuOpen) { menuOpen = true }
                 .padding(horizontal = 8.dp, vertical = 4.dp)
                 .testTag(MeshTestTags.DOCUMENT),
         ) {
@@ -226,6 +228,7 @@ private fun DocumentWidget(
                 fontStyle = if (untitled) FontStyle.Italic else FontStyle.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 220.dp),
             )
             Icon(
                 key = AllIconsKeys.General.ChevronDown,
@@ -290,7 +293,7 @@ private fun SaveFailureWidget(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
-                    .toolbarButton(open = popupOpen) { popupOpen = true }
+                    .toolbarButton(regionKey = "save-failure", open = popupOpen) { popupOpen = true }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
                     .testTag(MeshTestTags.SAVE_FAILURE),
             ) {
@@ -322,7 +325,11 @@ private fun SaveFailureWidget(
                 }
             }
         }
-        Link("Retry", onClick = onRetry, modifier = Modifier.testTag(MeshTestTags.SAVE_RETRY))
+        Link(
+            text = "Retry",
+            onClick = onRetry,
+            modifier = Modifier.clientRegion("save-retry").testTag(MeshTestTags.SAVE_RETRY),
+        )
     }
 }
 
@@ -362,7 +369,7 @@ private fun AgentWidget(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .toolbarButton(open = popupOpen) { popupOpen = true }
+                .toolbarButton(regionKey = "agent", open = popupOpen) { popupOpen = true }
                 .padding(horizontal = 8.dp, vertical = 4.dp)
                 .testTag(MeshTestTags.AGENT_STATUS),
         ) {
@@ -375,6 +382,8 @@ private fun AgentWidget(
                     StatusTone.Waiting, StatusTone.Off -> mutedColor()
                 },
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 200.dp),
             )
         }
 
@@ -479,6 +488,7 @@ private fun ExportWidget(
                 modifier = Modifier
                     .fillMaxHeight()
                     .toolbarButton(
+                        regionKey = "export-scale",
                         open = menuOpen,
                         shape = RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp),
                     ) { menuOpen = true }
@@ -532,7 +542,7 @@ private fun ExportWidget(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
                 .fillMaxHeight()
-                .toolbarButton(shape = RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp)) { onExport() }
+                .toolbarButton(regionKey = "export", shape = RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp)) { onExport() }
                 .padding(horizontal = 10.dp)
                 .testTag(MeshTestTags.EXPORT),
         ) {
@@ -703,6 +713,7 @@ private fun reveal(file: File) {
 /** A clickable toolbar control, with the hover and open states Jewel's own controls use. */
 @Composable
 private fun Modifier.toolbarButton(
+    regionKey: String,
     open: Boolean = false,
     shape: RoundedCornerShape = RoundedCornerShape(6.dp),
     onClick: () -> Unit,
@@ -715,6 +726,10 @@ private fun Modifier.toolbarButton(
         else -> Color.Transparent
     }
     return this
+        // Without this the platform treats the control as title-bar chrome and drags the window
+        // instead of clicking it: JBR force-disables hit testing outside a registered region on
+        // macOS and Windows.
+        .clientRegion(regionKey)
         .clip(shape)
         .background(background)
         .clickable(interactionSource = interactions, indication = null, onClick = onClick)

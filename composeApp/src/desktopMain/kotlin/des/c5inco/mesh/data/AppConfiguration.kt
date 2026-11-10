@@ -300,9 +300,10 @@ class AppConfiguration(
             try {
                 writeDocument(save.document, save.file)
             } catch (e: IOException) {
-                // Scoped to this snapshot and to the document still open, so a failure can neither be
-                // published for a save that has been superseded nor label a document that replaced it.
-                if (save.file == document.value.file) {
+                // Scoped to this snapshot's own document, by generation and path, so a failure can
+                // neither be published for a save that has been superseded nor label a document that
+                // replaced it — including one reopened at the same path.
+                if (save.generation == generation.get() && save.file == document.value.file) {
                     _saveFailure.value = SaveFailure(e.message ?: "Couldn't save", save.file)
                 }
                 throw e
