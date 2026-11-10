@@ -3,9 +3,12 @@ package data
 import androidx.compose.ui.geometry.Offset
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import model.MeshPoint
 import model.SavedColor
 import model.defaultMeshPointGrid
@@ -38,10 +41,13 @@ data class DocumentPoint(
 /**
  * The contents of a `.mesh` file: the canvas settings, the grid of points, and the document's custom colors.
  * Preset colors are global, so points that use one store its value and find it again when the file opens.
+ *
+ * The file's format is derived from the grid rather than stored: a grid the old 10 × 10 limit held is written
+ * as format 1, which every build reads, and a larger one as format 2, which only a build that knows about
+ * larger grids can open.
  */
 @Serializable
 data class MeshDocument(
-    val version: Int = CURRENT_VERSION,
     val meshState: MeshState = MeshState(),
     val backgroundColor: DocumentColor? = null,
     val customColors: List<DocumentColor> = emptyList(),
@@ -58,10 +64,26 @@ data class MeshDocument(
         }
     }
 
-    fun encode(): String = json.encodeToString(serializer(), this)
+    /**
+     * The format to write: 1 while the grid fits the old app's limit, which every build reads, and 2 once it
+     * doesn't, since only a build that reads larger grids can open it.
+     */
+    private val version: Int
+        get() = if (points.size > LEGACY_MAX_GRID_SIZE || points[0].size > LEGACY_MAX_GRID_SIZE) 2 else 1
+
+    /** The file's text, with `version` first: a reader checks it before it decodes the rest. */
+    fun encode(): String {
+        val fields = json.encodeToJsonElement(serializer(), this).jsonObject
+        val document = buildJsonObject {
+            put("version", version)
+            fields.forEach { (name, value) -> put(name, value) }
+        }
+        return json.encodeToString(JsonObject.serializer(), document)
+    }
 
     companion object {
-        const val CURRENT_VERSION = 1
+        /** The newest format this build reads; a file that names a later one doesn't open. */
+        const val CURRENT_VERSION = 2
         const val FILE_EXTENSION = "mesh"
 
         private val json = Json {
@@ -144,8 +166,8 @@ fun MeshDocument.open(presetColors: List<SavedColor>, newCustomColorId: () -> Lo
 }
 
 /**
- * The largest grid the old app could save. It bounds legacy data and must not follow [MAX_GRID_SIZE], which
- * has since grown.
+ * The largest grid the old app could save. It bounds legacy data, decides when a document is written in the
+ * newer format, and must not follow [MAX_GRID_SIZE], which has since grown.
  */
 private const val LEGACY_MAX_GRID_SIZE = 10
 

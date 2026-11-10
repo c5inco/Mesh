@@ -23,9 +23,14 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import model.MeshPoint
 import model.SavedColor
 import model.defaultMeshPointGrid
+import model.generateMeshPointGrid
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -412,6 +417,36 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `a grid the old app's limit held is saved in format 1 and a larger one in format 2`() = runBlocking {
+        val configuration = loadedConfiguration()
+
+        val versions = listOf(11 to 10, 10 to 11, 10 to 10, 64 to 64).map { (rows, cols) ->
+            configuration.updateTotalRows(rows)
+            configuration.updateTotalCols(cols)
+            assertTrue(configuration.saveDocument(documentFile))
+            fileVersion(documentFile)
+        }
+
+        assertEquals(listOf(2, 2, 1, 2), versions)
+    }
+
+    @Test
+    fun `the format a file names doesn't decide the grid it may hold`() = runBlocking {
+        val configuration = loadedConfiguration()
+        // A build since the grid limit grew writes a larger grid in format 1, before the format said so.
+        val larger = writeDocument(File(directory, "Larger.mesh"), documentWithGrid(11, 11), version = 1)
+        assertEquals(1, fileVersion(larger))
+        assertEquals(DocumentChange.Done, configuration.openDocument(larger))
+        assertEquals(11 to 11, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(List(11) { 11 }, configuration.meshPoints.map { it.size })
+
+        val smaller = writeDocument(File(directory, "Smaller.mesh"), documentWithGrid(3, 4), version = 2)
+        assertEquals(2, fileVersion(smaller))
+        assertEquals(DocumentChange.Done, configuration.openDocument(smaller))
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
     fun `a file from a newer version of Mesh doesn't replace the open document`() = runBlocking {
         val configuration = loadedConfiguration()
         // A newer format may not decode as this one at all.
@@ -452,6 +487,8 @@ class AppConfigurationTest {
         val migratedFile = File(directory, "My Mesh.mesh")
         assertEquals(Session(lastDocument = migratedFile.absolutePath), session)
         assertEquals(legacyMesh, saved(migratedFile))
+        // The migrated grid fits the old limit, so it stays in the format every build reads.
+        assertEquals(1, fileVersion(migratedFile))
         assertEquals(DocumentStatus(file = migratedFile, modified = false), migrated.document.value)
         val customColorId = migrated.customColors.value.single().uid
         assertTrue(migrated.meshPoints.flatten().all { it.second == customColorId })
@@ -634,6 +671,22 @@ class AppConfigurationTest {
 
     private fun writeDocument(file: File, meshState: MeshState = MeshState()) =
         file.apply { writeText(defaultDocument().copy(meshState = meshState).encode()) }
+
+    /** Writes [document] to [file] naming the given format, as an older build or an edited file might. */
+    private fun writeDocument(file: File, document: MeshDocument, version: Int) =
+        file.apply { writeText(document.encode().replace(Regex("\"version\": \\d+"), "\"version\": $version")) }
+
+    private fun documentWithGrid(rows: Int, cols: Int) = meshDocumentOf(
+        meshState = MeshState(rows = rows, cols = cols),
+        backgroundColorId = TRANSPARENT_COLOR_ID,
+        customColors = emptyList(),
+        points = generateMeshPointGrid(rows, cols, fakePresetColors.map(SavedColor::uid)),
+        colors = fakePresetColors,
+    )
+
+    /** The format named in [file], read as text rather than decoded, which drops the name. */
+    private fun fileVersion(file: File) = Json.parseToJsonElement(file.readText())
+        .jsonObject.getValue("version").jsonPrimitive.int
 
     private fun saved(file: File) = MeshDocument.decode(file.readText())
 
