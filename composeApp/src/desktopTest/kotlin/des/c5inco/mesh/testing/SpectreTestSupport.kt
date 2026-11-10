@@ -43,3 +43,38 @@ suspend fun ComposeAutomator.waitForText(
     eventually(description = "node with text '$text'", timeout = timeout) {
         findOneByText(text)
     }
+
+/**
+ * Waits for a node in the side panel, scrolling the panel to reach it. The panel is a lazy list that only
+ * composes what's on screen, so a control scrolled out of view doesn't exist until it's scrolled back.
+ */
+suspend fun ComposeAutomator.waitForSidePanelNode(
+    description: String,
+    timeout: Duration = 20.seconds,
+    find: ComposeAutomator.() -> AutomatorNode?,
+): AutomatorNode =
+    eventually(description = description, timeout = timeout) {
+        find() ?: scrollSidePanelUntil(find)
+    }
+
+suspend fun ComposeAutomator.waitForSidePanelTag(tag: String): AutomatorNode =
+    waitForSidePanelNode("side panel node with testTag '$tag'") { findOneByTestTag(tag) }
+
+suspend fun ComposeAutomator.waitForSidePanelText(text: String): AutomatorNode =
+    waitForSidePanelNode("side panel node with text '$text'") { findOneByText(text) }
+
+private suspend fun ComposeAutomator.scrollSidePanelUntil(find: ComposeAutomator.() -> AutomatorNode?): AutomatorNode? {
+    val panel = findOneByTestTag(MeshTestTags.SIDE_PANEL) ?: return null
+    // Up first, since most controls sit above the point list; then down through the points.
+    for (wheelClicks in listOf(-3, 3)) {
+        repeat(MAX_SIDE_PANEL_SCROLLS) {
+            scrollWheel(panel, wheelClicks)
+            waitForIdle()
+            refreshWindows()
+            find()?.let { return it }
+        }
+    }
+    return null
+}
+
+private const val MAX_SIDE_PANEL_SCROLLS = 15

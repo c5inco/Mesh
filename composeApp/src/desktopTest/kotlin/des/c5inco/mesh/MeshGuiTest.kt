@@ -1,5 +1,6 @@
 package des.c5inco.mesh
 
+import data.MAX_GRID_SIZE
 import des.c5inco.mesh.testing.MeshAppFixture
 import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.testing.addCustomColor
@@ -8,6 +9,9 @@ import des.c5inco.mesh.testing.eventually
 import des.c5inco.mesh.testing.openPointColorDropdown
 import des.c5inco.mesh.testing.selectColorInOpenDropdown
 import des.c5inco.mesh.testing.waitForClipboardText
+import des.c5inco.mesh.testing.waitForSidePanelNode
+import des.c5inco.mesh.testing.waitForSidePanelTag
+import des.c5inco.mesh.testing.waitForSidePanelText
 import des.c5inco.mesh.testing.waitForTestTag
 import des.c5inco.mesh.testing.waitForText
 import java.awt.GraphicsEnvironment
@@ -15,7 +19,9 @@ import java.awt.event.KeyEvent
 import javax.swing.JFrame
 import javax.swing.JMenuItem
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -63,13 +69,13 @@ class MeshGuiTest {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
 
-            val rowsInput = waitForTestTag(MeshTestTags.ROWS_INPUT)
+            val rowsInput = waitForSidePanelTag(MeshTestTags.ROWS_INPUT)
             assertTrue(rowsInput.editableText == "3", "Rows input should default to 3")
 
-            assertEquals("Untitled", waitForTestTag(MeshTestTags.DOCUMENT_NAME).text)
+            assertEquals("Untitled", waitForSidePanelTag(MeshTestTags.DOCUMENT_NAME).text)
             assertEquals("Untitled", fixture.windowTitle, "Showing the document should not edit it")
 
-            val showPoints = waitForTestTag(MeshTestTags.SHOW_POINTS)
+            val showPoints = waitForSidePanelTag(MeshTestTags.SHOW_POINTS)
             assertFalse(showPoints.isSelected, "Show points should start unchecked")
         }
     }
@@ -83,7 +89,7 @@ class MeshGuiTest {
 
             assertTrue(findOneByText("0,0") == null, "Point cursors should be hidden initially")
 
-            val showPoints = waitForTestTag(MeshTestTags.SHOW_POINTS)
+            val showPoints = waitForSidePanelTag(MeshTestTags.SHOW_POINTS)
             performSemanticsClick(showPoints)
             waitForVisualIdle()
 
@@ -98,7 +104,7 @@ class MeshGuiTest {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
 
-            performSemanticsClick(waitForTestTag(MeshTestTags.EXPORT_CODE))
+            performSemanticsClick(waitForSidePanelTag(MeshTestTags.EXPORT_CODE))
             waitForVisualIdle()
 
             waitForText("📋 Points copied to the clipboard!")
@@ -136,14 +142,14 @@ class MeshGuiTest {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
 
-            val rowsInput = waitForTestTag(MeshTestTags.ROWS_INPUT)
+            val rowsInput = waitForSidePanelTag(MeshTestTags.ROWS_INPUT)
             clearAndTypeText(rowsInput, "4")
             pressEnter()
             waitForVisualIdle()
 
-            waitForText("Row 4")
+            waitForSidePanelText("Row 4")
             assertTrue(
-                waitForTestTag(MeshTestTags.ROWS_INPUT).editableText == "4",
+                waitForSidePanelTag(MeshTestTags.ROWS_INPUT).editableText == "4",
                 "Rows input should reflect the updated value",
             )
         }
@@ -187,20 +193,23 @@ class MeshGuiTest {
             waitForVisualIdle()
 
             addCustomColor("0000FF")
-            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            performSemanticsClick(waitForSidePanelTag(MeshTestTags.customColor("0000FF")))
             waitForVisualIdle()
             waitForText("Delete #0000FF?")
 
             performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CANCEL))
             waitForVisualIdle()
             assertNull(findOneByText("Delete #0000FF?"), "Cancel should close the confirmation")
-            assertNotNull(findOneByTestTag(MeshTestTags.customColor("0000FF")), "Cancel should keep the color")
+            assertNotNull(waitForSidePanelTag(MeshTestTags.customColor("0000FF")), "Cancel should keep the color")
 
-            performSemanticsClick(waitForTestTag(MeshTestTags.customColor("0000FF")))
+            performSemanticsClick(waitForSidePanelTag(MeshTestTags.customColor("0000FF")))
             waitForVisualIdle()
             performSemanticsClick(waitForTestTag(MeshTestTags.DELETE_COLOR_CONFIRM))
+            // The add button shares the swatches' list item: while it's composed, a missing swatch is really gone.
+            waitForSidePanelTag(MeshTestTags.ADD_CUSTOM_COLOR)
             eventually(description = "custom color 0000FF to be deleted") {
-                if (findOneByTestTag(MeshTestTags.customColor("0000FF")) == null) Unit else null
+                val colorsShown = findOneByTestTag(MeshTestTags.ADD_CUSTOM_COLOR) != null
+                if (colorsShown && findOneByTestTag(MeshTestTags.customColor("0000FF")) == null) Unit else null
             }
         }
     }
@@ -213,13 +222,13 @@ class MeshGuiTest {
             waitForVisualIdle()
             assertEquals("Untitled — Edited", fixture.windowTitle)
 
-            performSemanticsClick(waitForTestTag(MeshTestTags.NEW_DOCUMENT))
+            performSemanticsClick(waitForSidePanelTag(MeshTestTags.NEW_DOCUMENT))
             waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
             waitForText("Save changes to “Untitled”?")
             performSemanticsClick(waitForText("Don’t Save"))
             waitForVisualIdle()
 
-            eventually(description = "the new document's default grid") {
+            waitForSidePanelNode("the new document's default grid") {
                 findOneByTestTag(MeshTestTags.ROWS_INPUT)?.takeIf { it.editableText == "3" }
             }
             eventually(description = "an unedited window title") {
@@ -242,7 +251,7 @@ class MeshGuiTest {
             assertEquals("Untitled", fixture.windowTitle)
 
             // Type a new row count without pressing Enter, then press New.
-            clearAndTypeText(waitForTestTag(MeshTestTags.ROWS_INPUT), "5")
+            clearAndTypeText(waitForSidePanelTag(MeshTestTags.ROWS_INPUT), "5")
             if (System.getProperty("os.name").lowercase().contains("mac")) {
                 // On macOS the File menu owns ⌘N, and synthetic key events don't reach menus,
                 // so pick the menu item that the shortcut picks.
@@ -256,9 +265,31 @@ class MeshGuiTest {
             waitForVisualIdle()
 
             waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
-            waitForText("Row 5")
+            eventually(description = "the typed row count to be committed") {
+                fixture.configuration.meshState.value.rows.takeIf { it == 5 }
+            }
             performSemanticsClick(waitForText("Don’t Save"))
             waitForVisualIdle()
+        }
+    }
+
+    @Test
+    @Order(11)
+    fun `a large grid only composes the point rows on screen`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            val configuration = fixture.configuration
+            withContext(Dispatchers.Main) {
+                configuration.updateTotalRows(MAX_GRID_SIZE)
+                configuration.updateTotalCols(MAX_GRID_SIZE)
+            }
+            waitForSidePanelText("Row 1")
+
+            val total = MAX_GRID_SIZE * MAX_GRID_SIZE
+            val composed = allNodes().count { it.testTag?.startsWith(MeshTestTags.POINT_COLOR_PREFIX) == true }
+            assertTrue(composed in 1 until total / 2, "Expected only the visible point rows, but $composed of $total were composed")
+
+            withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
         }
     }
 }

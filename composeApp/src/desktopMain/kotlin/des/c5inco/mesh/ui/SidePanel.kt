@@ -3,6 +3,9 @@ package des.c5inco.mesh.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -145,141 +148,153 @@ fun SidePanel(
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
-    
+    // Kept here rather than in their items, so they survive those items scrolling out of view.
+    var showColorInput by remember { mutableStateOf(false) }
+    var colorPendingDeletion by remember { mutableStateOf<SavedColor?>(null) }
+    // One list for every point row, so rows whose point didn't change can skip recomposing.
+    val availableColors = remember(presetColors, customColors) { presetColors + customColors }
+    val listState = rememberLazyListState()
+
     VerticallyScrollableContainer(
+        scrollState = listState,
         modifier = modifier
             .fillMaxHeight()
-            .background(JewelTheme.globalColors.panelBackground),
+            .background(JewelTheme.globalColors.panelBackground)
+            .testTag(MeshTestTags.SIDE_PANEL),
     ) {
-        Column {
-            DocumentSection(
-                name = documentName,
-                modified = documentModified,
-                onNew = onNewDocument,
-                onOpen = onOpenDocument,
-                onSave = onSaveDocument,
-                onSaveAs = onSaveDocumentAs,
-            )
+        // Only the rows on screen are composed, so a large grid costs no more to show than a small one.
+        LazyColumn(state = listState) {
+            item(key = "document") {
+                DocumentSection(
+                    name = documentName,
+                    modified = documentModified,
+                    onNew = onNewDocument,
+                    onOpen = onOpenDocument,
+                    onSave = onSaveDocument,
+                    onSaveAs = onSaveDocumentAs,
+                )
 
-            Divider(
-                orientation = Orientation.Horizontal,
-                thickness = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            )
+                Divider(
+                    orientation = Orientation.Horizontal,
+                    thickness = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
-            Column(
-                modifier = Modifier.padding(16.dp),
-            ) {
-                var showColorInput by remember { mutableStateOf(false) }
-                var colorPendingDeletion by remember { mutableStateOf<SavedColor?>(null) }
-
-                SectionHeader(title = "Colors")
-
-                Spacer(Modifier.height(12.dp))
-                Text("Presets", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
-                FlowRow(
-                    maxItemsInEachRow = 10,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(top = 8.dp)
+            item(key = "colors") {
+                Column(
+                    modifier = Modifier.padding(16.dp),
                 ) {
-                    presetColors.forEach { presetSavedColor ->
-                        ColorSwatch(color = presetSavedColor.toColor())
-                    }
-                }
+                    SectionHeader(title = "Colors")
 
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Custom", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
-                    Spacer(Modifier.width(8.dp))
-                    IconButton(
-                        onClick = { showColorInput = true },
-                        modifier = Modifier
-                            .size(14.dp)
-                            .testTag(MeshTestTags.ADD_CUSTOM_COLOR),
+                    Spacer(Modifier.height(12.dp))
+                    Text("Presets", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+                    FlowRow(
+                        maxItemsInEachRow = 10,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 8.dp)
                     ) {
-                        Icon(
-                            key = AllIconsKeys.General.InlineAdd,
-                            iconClass = AllIconsKeys::class.java,
-                            contentDescription = "Add color"
-                        )
+                        presetColors.forEach { presetSavedColor ->
+                            ColorSwatch(color = presetSavedColor.toColor())
+                        }
                     }
-                }
-                if (showColorInput) {
-                    ColorInput(
-                        onCancel = { showColorInput = false },
-                        onSubmit = {
-                            showColorInput = false
-                            onAddColor(it)
-                        },
-                        modifier = Modifier.padding(vertical = 8.dp),
-                    )
-                } else {
-                    Spacer(Modifier.height(8.dp))
-                }
-                FlowRow(
-                    maxItemsInEachRow = 10,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    customColors.forEach { savedColor ->
-                        // The confirmation popup anchors to the swatch that opened it.
-                        Box {
-                            ColorSwatch(
-                                color = savedColor.toColor(),
-                                modifier = Modifier
-                                    .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
-                                    // Until the mesh loads, its points can't be checked or cleared.
-                                    .clickable(enabled = meshPoints.isNotEmpty()) {
-                                        showColorInput = false
-                                        colorPendingDeletion = savedColor
-                                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Custom", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = { showColorInput = true },
+                            modifier = Modifier
+                                .size(14.dp)
+                                .testTag(MeshTestTags.ADD_CUSTOM_COLOR),
+                        ) {
+                            Icon(
+                                key = AllIconsKeys.General.InlineAdd,
+                                iconClass = AllIconsKeys::class.java,
+                                contentDescription = "Add color"
                             )
-                            if (colorPendingDeletion == savedColor) {
-                                DeleteColorConfirmation(
-                                    color = savedColor,
-                                    pointsUsingColor = meshPoints.sumOf { row -> row.count { it.second == savedColor.uid } },
-                                    backgroundUsesColor = canvasBackgroundColor == savedColor.uid,
-                                    onCancel = { colorPendingDeletion = null },
-                                    onConfirm = {
-                                        colorPendingDeletion = null
-                                        onRemoveColor(savedColor)
-                                    },
+                        }
+                    }
+                    if (showColorInput) {
+                        ColorInput(
+                            onCancel = { showColorInput = false },
+                            onSubmit = {
+                                showColorInput = false
+                                onAddColor(it)
+                            },
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    } else {
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    FlowRow(
+                        maxItemsInEachRow = 10,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        customColors.forEach { savedColor ->
+                            // The confirmation popup anchors to the swatch that opened it.
+                            Box {
+                                ColorSwatch(
+                                    color = savedColor.toColor(),
+                                    modifier = Modifier
+                                        .testTag(MeshTestTags.customColor(savedColor.toColor().toHexStringNoHash()))
+                                        // Until the mesh loads, its points can't be checked or cleared.
+                                        .clickable(enabled = meshPoints.isNotEmpty()) {
+                                            showColorInput = false
+                                            colorPendingDeletion = savedColor
+                                        }
                                 )
+                                if (colorPendingDeletion == savedColor) {
+                                    DeleteColorConfirmation(
+                                        color = savedColor,
+                                        pointsUsingColor = meshPoints.sumOf { row -> row.count { it.second == savedColor.uid } },
+                                        backgroundUsesColor = canvasBackgroundColor == savedColor.uid,
+                                        onCancel = { colorPendingDeletion = null },
+                                        onConfirm = {
+                                            colorPendingDeletion = null
+                                            onRemoveColor(savedColor)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
                 }
+
+                Divider(
+                    orientation = Orientation.Horizontal,
+                    thickness = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
-            Divider(
-                orientation = Orientation.Horizontal,
-                thickness = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item(key = "canvas") {
+                CanvasSection(
+                    exportScale = exportScale,
+                    backgroundColor = canvasBackgroundColor,
+                    canvasWidthMode = canvasWidthMode,
+                    canvasWidth = canvasWidth,
+                    canvasHeightMode = canvasHeightMode,
+                    canvasHeight = canvasHeight,
+                    blurLevel = blurLevel,
+                    availableColors = availableColors,
+                    onExportScaleChange = onExportScaleChange,
+                    onExport = onExport,
+                    onBackgroundColorChange = { onCanvasBackgroundColorChange(it) },
+                    onCanvasWidthModeChange = onCanvasWidthModeChange,
+                    onCanvasWidthChange = onCanvasWidthChange,
+                    onCanvasHeightModeChange = onCanvasHeightModeChange,
+                    onCanvasHeightChange = onCanvasHeightChange,
+                    onBlurLevelChange = { onBlurLevelChange(it) }
+                )
+            }
 
-            CanvasSection(
-                exportScale = exportScale,
-                backgroundColor = canvasBackgroundColor,
-                canvasWidthMode = canvasWidthMode,
-                canvasWidth = canvasWidth,
-                canvasHeightMode = canvasHeightMode,
-                canvasHeight = canvasHeight,
-                blurLevel = blurLevel,
-                availableColors = presetColors + customColors,
-                onExportScaleChange = onExportScaleChange,
-                onExport = onExport,
-                onBackgroundColorChange = { onCanvasBackgroundColorChange(it) },
-                onCanvasWidthModeChange = onCanvasWidthModeChange,
-                onCanvasWidthChange = onCanvasWidthChange,
-                onCanvasHeightModeChange = onCanvasHeightModeChange,
-                onCanvasHeightChange = onCanvasHeightChange,
-                onBlurLevelChange = { onBlurLevelChange(it) }
-            )
-
-            if (mcpServerState != null) {
+            if (mcpServerState != null) item(key = "mcp") {
                 Divider(
                     orientation = Orientation.Horizontal,
                     thickness = 1.dp,
@@ -293,136 +308,168 @@ fun SidePanel(
                 )
             }
 
-            Divider(
-                orientation = Orientation.Horizontal,
-                thickness = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Column(
-                Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
-            ) {
-                SectionHeader(
-                    title = "Points",
-                    actions = {
-                        Tooltip(tooltip = { Text("Export points as code") }) {
-                            IconButton(
-                                onClick = {
-                                    onExportCode()
-                                    focusManager.clearFocus()
-                                },
-                                modifier = Modifier.testTag(MeshTestTags.EXPORT_CODE),
-                            ) {
-                                Icon(
-                                    painter = painterResource(resource = Res.drawable.featureCodeBlock_dark),
-                                    contentDescription = "Export points as code"
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(2.dp))
-                        Tooltip(tooltip = { Text("Distribute points evenly") }) {
-                            IconButton(
-                                onClick = {
-                                    onDistributeMeshPointsEvenly()
-                                    focusManager.clearFocus()
-                                }
-                            ) {
-                                Icon(
-                                    painter = painterResource(resource = Res.drawable.distributeEvenly_dark),
-                                    contentDescription = "Distribute points evenly"
-                                )
-                            }
-                        }
-                    }
+            item(key = "points") {
+                Divider(
+                    orientation = Orientation.Horizontal,
+                    thickness = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(12.dp))
-                Row {
-                    DimensionInputField(
-                        value = totalRows,
-                        enabled = true,
-                        paramName = "Rows",
-                        min = MIN_GRID_SIZE,
-                        max = MAX_GRID_SIZE,
-                        onUpdate = onUpdateTotalRows,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag(MeshTestTags.ROWS_INPUT)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    DimensionInputField(
-                        value = totalCols,
-                        enabled = true,
-                        paramName = "Cols",
-                        min = MIN_GRID_SIZE,
-                        max = MAX_GRID_SIZE,
-                        onUpdate = onUpdateTotalCols,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag(MeshTestTags.COLS_INPUT)
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-                CheckboxRow(
-                    text = "Show points",
-                    checked = showPoints,
-                    onCheckedChange = { onTogglePoints() },
-                    modifier = Modifier.testTag(MeshTestTags.SHOW_POINTS),
-                )
-                CheckboxRow(
-                    text = "Constrain edge points",
-                    checked = constrainEdgePoints,
-                    onCheckedChange = { onToggleConstrainingEdgePoints() },
-                )
-            }
 
-            val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
-                ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
-            val selectedHighlightHeight = 24.dp
-
-            Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.padding(16.dp)
-            ) {
-                meshPoints.forEachIndexed { rowIdx, rowPoints ->
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = "Row ${rowIdx + 1}",
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        rowPoints.forEachIndexed { colIdx, point ->
-                            Box(
-                                contentAlignment = Alignment.CenterStart,
-                            ) {
-                                ColorPointRow(
-                                    x = point.first.x,
-                                    y = point.first.y,
-                                    constrainX = constrainEdgePoints && (colIdx == 0 || colIdx == rowPoints.size - 1),
-                                    constrainY = constrainEdgePoints && (rowIdx == 0 || rowIdx == meshPoints.size - 1),
-                                    colorId = point.second,
-                                    availableColors = presetColors + customColors,
-                                    colorDropdownTestTag = MeshTestTags.pointColor(rowIdx, colIdx),
-                                    onUpdatePoint = { (nextOffset, nextColor) ->
-                                        onUpdateMeshPoint(rowIdx, colIdx, Pair(Offset(x = nextOffset.x, y = nextOffset.y), nextColor))
+                Column(
+                    Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+                ) {
+                    SectionHeader(
+                        title = "Points",
+                        actions = {
+                            Tooltip(tooltip = { Text("Export points as code") }) {
+                                IconButton(
+                                    onClick = {
+                                        onExportCode()
+                                        focusManager.clearFocus()
                                     },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                if (selectedColorPoint == Pair(rowIdx, colIdx)) {
-                                    Spacer(
-                                        Modifier
-                                            .offset(x = -16.dp)
-                                            .background(selectedPointColor)
-                                            .width(4.dp)
-                                            .height(selectedHighlightHeight)
+                                    modifier = Modifier.testTag(MeshTestTags.EXPORT_CODE),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(resource = Res.drawable.featureCodeBlock_dark),
+                                        contentDescription = "Export points as code"
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(2.dp))
+                            Tooltip(tooltip = { Text("Distribute points evenly") }) {
+                                IconButton(
+                                    onClick = {
+                                        onDistributeMeshPointsEvenly()
+                                        focusManager.clearFocus()
+                                    }
+                                ) {
+                                    Icon(
+                                        painter = painterResource(resource = Res.drawable.distributeEvenly_dark),
+                                        contentDescription = "Distribute points evenly"
                                     )
                                 }
                             }
                         }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row {
+                        DimensionInputField(
+                            value = totalRows,
+                            enabled = true,
+                            paramName = "Rows",
+                            min = MIN_GRID_SIZE,
+                            max = MAX_GRID_SIZE,
+                            onUpdate = onUpdateTotalRows,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag(MeshTestTags.ROWS_INPUT)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        DimensionInputField(
+                            value = totalCols,
+                            enabled = true,
+                            paramName = "Cols",
+                            min = MIN_GRID_SIZE,
+                            max = MAX_GRID_SIZE,
+                            onUpdate = onUpdateTotalCols,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag(MeshTestTags.COLS_INPUT)
+                        )
                     }
+                    Spacer(Modifier.height(12.dp))
+                    CheckboxRow(
+                        text = "Show points",
+                        checked = showPoints,
+                        onCheckedChange = { onTogglePoints() },
+                        modifier = Modifier.testTag(MeshTestTags.SHOW_POINTS),
+                    )
+                    CheckboxRow(
+                        text = "Constrain edge points",
+                        checked = constrainEdgePoints,
+                        onCheckedChange = { onToggleConstrainingEdgePoints() },
+                    )
                 }
             }
+
+            meshPoints.forEachIndexed { rowIdx, rowPoints ->
+                item(key = "row-$rowIdx", contentType = "row-header") {
+                    Text(
+                        text = "Row ${rowIdx + 1}",
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+                    )
+                }
+                itemsIndexed(
+                    items = rowPoints,
+                    key = { colIdx, _ -> "point-$rowIdx-$colIdx" },
+                    contentType = { _, _ -> "point" },
+                ) { colIdx, point ->
+                    val lastInRow = colIdx == rowPoints.lastIndex
+                    PointListItem(
+                        row = rowIdx,
+                        col = colIdx,
+                        point = point,
+                        constrainX = constrainEdgePoints && (colIdx == 0 || lastInRow),
+                        constrainY = constrainEdgePoints && (rowIdx == 0 || rowIdx == meshPoints.lastIndex),
+                        availableColors = availableColors,
+                        selected = selectedColorPoint == Pair(rowIdx, colIdx),
+                        onUpdateMeshPoint = onUpdateMeshPoint,
+                        modifier = Modifier.padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            bottom = when {
+                                !lastInRow -> 8.dp
+                                rowIdx == meshPoints.lastIndex -> 16.dp
+                                else -> 0.dp
+                            },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** One point's editor in the list: its color and position, with a bar when it's selected on the canvas. */
+@Composable
+private fun PointListItem(
+    row: Int,
+    col: Int,
+    point: Pair<Offset, Long>,
+    constrainX: Boolean,
+    constrainY: Boolean,
+    availableColors: List<SavedColor>,
+    selected: Boolean,
+    onUpdateMeshPoint: (row: Int, col: Int, point: Pair<Offset, Long>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        contentAlignment = Alignment.CenterStart,
+        modifier = modifier,
+    ) {
+        ColorPointRow(
+            x = point.first.x,
+            y = point.first.y,
+            constrainX = constrainX,
+            constrainY = constrainY,
+            colorId = point.second,
+            availableColors = availableColors,
+            colorDropdownTestTag = MeshTestTags.pointColor(row, col),
+            onUpdatePoint = { onUpdateMeshPoint(row, col, it) },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        if (selected) {
+            val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
+                ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
+            Spacer(
+                Modifier
+                    .offset(x = -16.dp)
+                    .background(selectedPointColor)
+                    .width(4.dp)
+                    .height(24.dp)
+            )
         }
     }
 }
