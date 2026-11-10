@@ -173,7 +173,6 @@ fun GradientCanvas(
                 val x = (currentOffset.x + (offsetX / maxWidth)).coerceIn(0f, 1f)
                 val y = (currentOffset.y + (offsetY / maxHeight)).coerceIn(0f, 1f)
 
-                println("$x, $y")
                 onPointDrag(
                     coordinate.second,
                     coordinate.first,

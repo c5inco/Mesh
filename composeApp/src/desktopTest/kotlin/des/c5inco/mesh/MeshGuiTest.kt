@@ -283,13 +283,16 @@ class MeshGuiTest {
                 configuration.updateTotalRows(MAX_GRID_SIZE)
                 configuration.updateTotalCols(MAX_GRID_SIZE)
             }
-            waitForSidePanelText("Row 1")
+            // Undo even when the test fails: a full grid left behind slows every later side panel lookup.
+            try {
+                waitForSidePanelText("Row 1")
 
-            val total = MAX_GRID_SIZE * MAX_GRID_SIZE
-            val composed = allNodes().count { it.testTag?.startsWith(MeshTestTags.POINT_COLOR_PREFIX) == true }
-            assertTrue(composed in 1 until total / 2, "Expected only the visible point rows, but $composed of $total were composed")
-
-            withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
+                val total = MAX_GRID_SIZE * MAX_GRID_SIZE
+                val composed = allNodes().count { it.testTag?.startsWith(MeshTestTags.POINT_COLOR_PREFIX) == true }
+                assertTrue(composed in 1 until total / 2, "Expected only the visible point rows, but $composed of $total were composed")
+            } finally {
+                withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
+            }
         }
     }
 
@@ -303,12 +306,13 @@ class MeshGuiTest {
                 configuration.updateTotalRows(MAX_GRID_SIZE)
                 configuration.updateTotalCols(MAX_GRID_SIZE)
             }
-
-            waitForSidePanelTag(MeshTestTags.pointColor(MAX_GRID_SIZE - 1, MAX_GRID_SIZE - 1))
-            assertNull(findOneByTestTag(MeshTestTags.DOCUMENT_NAME), "The document controls should be scrolled far away")
-            assertEquals("Untitled", waitForSidePanelTag(MeshTestTags.DOCUMENT_NAME).text)
-
-            withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
+            try {
+                waitForSidePanelTag(MeshTestTags.pointColor(MAX_GRID_SIZE - 1, MAX_GRID_SIZE - 1))
+                assertNull(findOneByTestTag(MeshTestTags.DOCUMENT_NAME), "The document controls should be scrolled far away")
+                assertEquals("Untitled", waitForSidePanelTag(MeshTestTags.DOCUMENT_NAME).text)
+            } finally {
+                withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
+            }
         }
     }
 
@@ -318,40 +322,64 @@ class MeshGuiTest {
         with(fixture.automator) {
             waitForTestTag(MeshTestTags.APP)
             val configuration = fixture.configuration
-            val rows = 8
-            // Enough rows that the last point is far below the Colors section.
-            withContext(Dispatchers.Main) { configuration.updateTotalRows(rows) }
+            // The last point of a full-height grid is far below the Colors section in any window.
+            withContext(Dispatchers.Main) { configuration.updateTotalRows(MAX_GRID_SIZE) }
+            try {
+                performSemanticsClick(waitForSidePanelTag(MeshTestTags.ADD_CUSTOM_COLOR))
+                val input = eventually(description = "focused custom color input") {
+                    findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.isFocused }
+                }
+                // The editor drops a leading hash, including the lone "#" typed first.
+                clearAndTypeText(input, "#ABCDEF")
+                eventually(description = "custom color input to read ABCDEF") {
+                    findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.editableText == "ABCDEF" }
+                }
+                // Move focus elsewhere, since the list keeps a focused item composed.
+                performSemanticsClick(waitForSidePanelTag(MeshTestTags.ROWS_INPUT))
+                waitForVisualIdle()
 
-            performSemanticsClick(waitForSidePanelTag(MeshTestTags.ADD_CUSTOM_COLOR))
-            val input = eventually(description = "focused custom color input") {
-                findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.isFocused }
+                waitForSidePanelTag(MeshTestTags.pointColor(MAX_GRID_SIZE - 1, 2))
+                assertNull(findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT), "The editor should be scrolled out of view")
+
+                waitForSidePanelTag(MeshTestTags.CUSTOM_COLOR_INPUT)
+                waitForVisualIdle()
+                refreshWindows()
+                val shownAgain = findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)
+                assertEquals("ABCDEF", shownAgain?.editableText, "The editor should keep what was typed")
+                assertFalse(shownAgain!!.isFocused, "Scrolling the editor back should not take focus")
+
+                performSemanticsClick(shownAgain)
+                eventually(description = "focused custom color input") {
+                    findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.isFocused }
+                }
+                pressEnter()
+                waitForSidePanelTag(MeshTestTags.customColor("ABCDEF"))
+            } finally {
+                withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
             }
-            clearAndTypeText(input, "ABCDEF")
-            eventually(description = "custom color input to read ABCDEF") {
-                findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.editableText == "ABCDEF" }
+        }
+    }
+
+    @Test
+    @Order(14)
+    fun `a delete confirmation closes when its color scrolls out of view`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            val configuration = fixture.configuration
+            withContext(Dispatchers.Main) { configuration.updateTotalRows(MAX_GRID_SIZE) }
+            try {
+                addCustomColor("123456")
+                performSemanticsClick(waitForSidePanelTag(MeshTestTags.customColor("123456")))
+                waitForText("Delete #123456?")
+
+                waitForSidePanelTag(MeshTestTags.pointColor(MAX_GRID_SIZE - 1, 2))
+                waitForSidePanelTag(MeshTestTags.customColor("123456"))
+                waitForVisualIdle()
+                refreshWindows()
+                assertNull(findOneByText("Delete #123456?"), "Scrolling back should not reopen the confirmation")
+            } finally {
+                withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
             }
-            // Move focus elsewhere, since the list keeps a focused item composed.
-            performSemanticsClick(waitForSidePanelTag(MeshTestTags.ROWS_INPUT))
-            waitForVisualIdle()
-
-            waitForSidePanelTag(MeshTestTags.pointColor(rows - 1, 2))
-            assertNull(findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT), "The editor should be scrolled out of view")
-
-            waitForSidePanelTag(MeshTestTags.CUSTOM_COLOR_INPUT)
-            waitForVisualIdle()
-            refreshWindows()
-            val shownAgain = findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)
-            assertEquals("ABCDEF", shownAgain?.editableText, "The editor should keep what was typed")
-            assertFalse(shownAgain!!.isFocused, "Scrolling the editor back should not take focus")
-
-            performSemanticsClick(shownAgain)
-            eventually(description = "focused custom color input") {
-                findOneByTestTag(MeshTestTags.CUSTOM_COLOR_INPUT)?.takeIf { it.isFocused }
-            }
-            pressEnter()
-            waitForSidePanelTag(MeshTestTags.customColor("ABCDEF"))
-
-            withContext(Dispatchers.Main) { repeat(2) { configuration.undo() } }
         }
     }
 }

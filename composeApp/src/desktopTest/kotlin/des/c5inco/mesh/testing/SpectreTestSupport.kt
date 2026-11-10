@@ -114,7 +114,7 @@ private suspend fun scrollSidePanelTo(index: Int): SidePanelPage? {
             index = index,
             itemCount = list.config[SemanticsProperties.CollectionInfo].rowCount,
             atEnd = range.value() >= range.maxValue(),
-            tags = list.testTags(),
+            tags = list.visibleTestTags(),
         )
     }
 }
@@ -137,10 +137,17 @@ private suspend fun <T> withSidePanelList(block: (SemanticsNode) -> T): T? = wit
 private fun SemanticsNode.findFirst(predicate: (SemanticsNode) -> Boolean): SemanticsNode? =
     if (predicate(this)) this else children.firstNotNullOfOrNull { it.findFirst(predicate) }
 
-private fun SemanticsNode.testTags(): Set<String> = buildSet {
+/**
+ * The test tags on screen in this list. The list keeps a focused item composed after it scrolls away, so
+ * counting every tag under the list would count that item on every page and hide gaps between pages.
+ */
+private fun SemanticsNode.visibleTestTags(): Set<String> = buildSet {
+    val viewport = boundsInRoot
     fun collect(node: SemanticsNode) {
-        node.config.getOrNull(SemanticsProperties.TestTag)?.let(::add)
+        node.config.getOrNull(SemanticsProperties.TestTag)
+            ?.takeIf { node.boundsInRoot.overlaps(viewport) }
+            ?.let(::add)
         node.children.forEach(::collect)
     }
-    collect(this@testTags)
+    collect(this@visibleTestTags)
 }

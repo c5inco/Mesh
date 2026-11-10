@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -183,6 +184,11 @@ fun SidePanel(
             }
 
             item(key = "colors") {
+                // The delete confirmation is anchored to a swatch in this item: when the item scrolls away,
+                // close it rather than have it reappear whenever the item scrolls back.
+                DisposableEffect(Unit) {
+                    onDispose { colorPendingDeletion = null }
+                }
                 Column(
                     modifier = Modifier.padding(16.dp),
                 ) {
@@ -699,16 +705,12 @@ private fun ColorInput(
             .collectLatest {
                 var text = it.toString()
                 if (text.startsWith(("#"))) {
-                    text = text.substring(1, 7)
+                    // Up to six digits after the hash: a lone "#" or a short color must not throw.
+                    text = text.drop(1).take(6)
                     textFieldState.edit { replace(0, it.length, text) }
                 }
 
-                try {
-                    color = text.toColor()
-                    println("converted: $color")
-                } catch (e: Exception) {
-                    println("fail")
-                }
+                runCatching { text.toColor() }.onSuccess { color = it }
             }
     }
 
@@ -727,11 +729,9 @@ private fun ColorInput(
         try {
             color = formattedText.toColor()
             textFieldState.edit { replace(0, originalText.length, formattedText) }
-            println("converted: $color")
             return true
         } catch (e: Exception) {
             reset()
-            println("fail")
         }
         return false
     }
