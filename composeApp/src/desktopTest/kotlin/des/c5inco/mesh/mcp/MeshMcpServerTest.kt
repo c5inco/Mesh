@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -436,15 +437,27 @@ class MeshMcpServerTest {
         val summary = Json.parseToJsonElement(result.text()).jsonObject
         assertEquals(64 to 64, summary.int("rows") to summary.int("cols"))
         assertEquals(null, summary["points"])
-        assertTrue(
-            summary["pointsOmitted"]!!.jsonPrimitive.content.contains("4096 points"),
-            summary["pointsOmitted"].toString(),
-        )
+        val omitted = summary["pointsOmitted"]!!.jsonPrimitive.content
+        assertTrue(omitted.contains("4096 points"), omitted)
         // The settings and the colors stay, so update_point's "call get_mesh for color IDs" still works.
         assertEquals(3, summary["colors"]!!.jsonArray.size)
         for (field in listOf("document", "canvasWidth", "canvasHeight", "blurLevel", "constrainEdgePoints")) {
             assertTrue(summary.containsKey(field), "$field is missing from $summary")
         }
+        // The region the summary suggests has to be one that works: the whole grid's bounds are the call that errors.
+        val example = Regex("rowStart (\\d+), rowEnd (\\d+), colStart (\\d+), colEnd (\\d+)").find(omitted)
+        assertEquals(true, example != null, omitted)
+        val (exampleRowStart, exampleRowEnd, exampleColStart, exampleColEnd) =
+            example!!.groupValues.drop(1).map { it.toInt() }
+        val suggested = getMesh(
+            mapOf(
+                "rowStart" to exampleRowStart,
+                "rowEnd" to exampleRowEnd,
+                "colStart" to exampleColStart,
+                "colEnd" to exampleColEnd,
+            )
+        )
+        assertEquals(256, suggested["points"]!!.jsonArray.size, omitted)
 
         val ranged = getMesh(mapOf("rowStart" to 10, "rowEnd" to 13, "colStart" to 20, "colEnd" to 59))
         assertEquals(3, ranged["colors"]!!.jsonArray.size)
@@ -495,7 +508,18 @@ class MeshMcpServerTest {
         assertEquals(true, pastEnd.isError)
         assertTrue(pastEnd.text().contains("3 rows and 4 columns"), pastEnd.text())
 
-        for (range in listOf(mapOf("colStart" to -1), mapOf("rowStart" to 2, "rowEnd" to 1))) {
+        // rowEnd 63 is a legal index of the largest grid and an error on a 3×4 one, which is why the schema
+        // advertises no maximum.
+        val outOfGrid = listOf(
+            mapOf("colStart" to -1),
+            mapOf("colStart" to 4),
+            mapOf("colEnd" to 4),
+            mapOf("rowStart" to 3),
+            mapOf("rowEnd" to MAX_GRID_SIZE - 1),
+            mapOf("rowStart" to 2, "rowEnd" to 1),
+            mapOf("colStart" to 2, "colEnd" to 1),
+        )
+        for (range in outOfGrid) {
             val result = client.callTool("get_mesh", range)
             assertEquals(true, result.isError, "$range: ${result.text()}")
         }
@@ -504,8 +528,51 @@ class MeshMcpServerTest {
     }
 
     @Test
-    fun `get_mesh advertises inclusive range arguments bounded by the largest grid`() = runBlocking {
-        val schema = client.listTools().tools.single { it.name == "get_mesh" }.inputSchema
+    fun `get_mesh treats a range end of 0 as index 0, not as the default`() = runBlocking {
+        val firstRow = getMesh(mapOf("rowEnd" to 0))
+        assertEquals(4, firstRow["points"]!!.jsonArray.size)
+        assertEquals(setOf(0), firstRow["points"]!!.jsonArray.map { it.jsonObject.int("row") }.toSet())
+
+        val firstColumn = getMesh(mapOf("colEnd" to 0))
+        assertEquals(3, firstColumn["points"]!!.jsonArray.size)
+        assertEquals(setOf(0), firstColumn["points"]!!.jsonArray.map { it.jsonObject.int("col") }.toSet())
+
+        // Only an omitted end defaults to the grid's last row and column.
+        assertEquals(12, getMesh(mapOf("rowStart" to 0, "colStart" to 0))["points"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `a ranged get_mesh points array round-trips through update_points`() = runBlocking {
+        callOk("set_grid", mapOf("rows" to 64, "cols" to 64))
+        val before = configuration.meshPoints.toList()
+        val points = getMesh(mapOf("rowStart" to 10, "rowEnd" to 13, "colStart" to 20, "colEnd" to 59))["points"]!!
+            .jsonArray.map { it.jsonObject }
+        assertEquals(160, points.size)
+
+        // An agent edits what it read: the whole ranged array goes back, with one point moved.
+        val edited = points.map { point ->
+            if (point.int("row") == 11 && point.int("col") == 30) JsonObject(point + ("x" to JsonPrimitive(0.5))) else point
+        }
+        val result = callOk("update_points", mapOf("points" to edited))
+        // The tool reports every point it was asked to edit, so the count is the whole range, not just the one moved.
+        assertTrue(result.text().startsWith("Updated 160 points as one edit"), result.text())
+        assertEquals(Offset(0.5f, before[11][30].first.y), configuration.meshPoints[11][30].first)
+
+        // Every other echoed point was already at its value, so nothing else moved.
+        val after = configuration.meshPoints.toList()
+        assertEquals(
+            before.flatten().filterIndexed { index, _ -> index != 11 * 64 + 30 },
+            after.flatten().filterIndexed { index, _ -> index != 11 * 64 + 30 },
+        )
+
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+    }
+
+    @Test
+    fun `get_mesh advertises inclusive range arguments within the current grid`() = runBlocking {
+        val tool = client.listTools().tools.single { it.name == "get_mesh" }
+        val schema = tool.inputSchema
         val properties = schema.properties!!
 
         assertEquals(setOf("rowStart", "rowEnd", "colStart", "colEnd"), properties.keys)
@@ -513,10 +580,17 @@ class MeshMcpServerTest {
             val argument = property.jsonObject
             assertEquals("integer", argument["type"]!!.jsonPrimitive.content, name)
             assertEquals("0", argument["minimum"]!!.jsonPrimitive.content, name)
-            assertEquals("${MAX_GRID_SIZE - 1}", argument["maximum"]!!.jsonPrimitive.content, name)
-            assertTrue(argument["description"]!!.jsonPrimitive.content.contains("inclusive"), name)
+            // The handler checks against the open grid, which may be smaller than the largest one, so the schema
+            // cannot advertise a maximum that every call could meet.
+            assertEquals(null, argument["maximum"], name)
+            val description = argument["description"]!!.jsonPrimitive.content
+            assertTrue(description.contains("inclusive"), description)
+            assertTrue(description.contains("current grid"), description)
+            assertTrue(description.contains("omitted"), description)
         }
         assertTrue(schema.required.isNullOrEmpty(), "get_mesh takes no required argument")
+        // The schema can't say that extra fields are rejected, so the description has to.
+        assertTrue(tool.description.orEmpty().contains("a field other than those four"), tool.description.orEmpty())
     }
 
     @Test

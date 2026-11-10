@@ -70,8 +70,9 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
             "Call get_mesh first to read the grid and the color IDs; a grid of more than $MAX_READ_POINTS points " +
-            "comes back without its points unless you pass rowStart, rowEnd, colStart, and colEnd, so read the region " +
-            "you are editing. Then edit with set_grid, update_point (or update_points for many at once), and add_color, " +
+            "comes back without its points unless you pass rowStart, rowEnd, colStart, and colEnd, which must select " +
+            "a region of at most $MAX_READ_POINTS points and is rejected otherwise. " +
+            "Then edit with set_grid, update_point (or update_points for many at once), and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
         addTool(
@@ -80,14 +81,15 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 "canvas settings, the preset and custom colors with their IDs, and the points' row, column, " +
                 "position, and color ID. Positions are fractions of the canvas from 0 to 1, with (0, 0) at the top " +
                 "left. Returns at most $MAX_READ_POINTS points per call: pass rowStart, rowEnd, colStart, and " +
-                "colEnd to read a region of a larger grid, which otherwise comes back without its points. " +
+                "colEnd to read a region of a larger grid, which otherwise comes back without its points. A region " +
+                "over $MAX_READ_POINTS points is rejected, and so is a field other than those four. " +
                 "Color IDs belong to the open document and change when another document opens.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
-                    putRangeProperty("rowStart", "First row to return, inclusive. Defaults to the grid's first row.")
-                    putRangeProperty("rowEnd", "Last row to return, inclusive. Defaults to the grid's last row.")
-                    putRangeProperty("colStart", "First column to return, inclusive. Defaults to the grid's first column.")
-                    putRangeProperty("colEnd", "Last column to return, inclusive. Defaults to the grid's last column.")
+                    putRangeProperty("rowStart", "First row to return, inclusive. Must be a row of the current grid; omitted defaults to its first row.")
+                    putRangeProperty("rowEnd", "Last row to return, inclusive. Must be a row of the current grid; omitted defaults to its last row, and 0 asks for row 0 alone.")
+                    putRangeProperty("colStart", "First column to return, inclusive. Must be a column of the current grid; omitted defaults to its first column.")
+                    putRangeProperty("colEnd", "Last column to return, inclusive. Must be a column of the current grid; omitted defaults to its last column, and 0 asks for column 0 alone.")
                 },
             ),
         ) { configuration.awaitMeshLoaded(); getMesh(it) }
@@ -265,10 +267,13 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                     }
                 })
                 if (omitted) {
+                    // The whole grid's bounds are the call that errors, so name a region that fits the limit.
+                    val exampleLastRow = minOf(meshState.rows - 1, (MAX_READ_POINTS / meshState.cols).coerceAtLeast(1) - 1)
                     put(
                         "pointsOmitted",
                         "The grid has $count points and get_mesh returns at most $MAX_READ_POINTS per call; pass " +
-                            "rowStart, rowEnd, colStart, and colEnd to read a region, or call render_png to see the mesh.",
+                            "a region of at most $MAX_READ_POINTS points, such as rowStart 0, rowEnd $exampleLastRow, " +
+                            "colStart 0, colEnd ${meshState.cols - 1}, or call render_png to see the mesh.",
                     )
                 } else {
                     put("points", buildJsonArray {
@@ -529,10 +534,10 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     /** Whether a requested coordinate is outside 0–1; echoing the [current] one back is always allowed. */
     private fun Float?.isOutOfRange(current: Float) = this != null && this != current && this !in 0f..1f
 
-    /** Adds an inclusive get_mesh range argument: an index of the largest grid, from 0. */
+    /** Adds an inclusive get_mesh range argument: an index of the open grid, from 0. */
     private fun JsonObjectBuilder.putRangeProperty(name: String, description: String) {
         putJsonObject(name) {
-            put("type", "integer"); put("minimum", 0); put("maximum", MAX_GRID_SIZE - 1)
+            put("type", "integer"); put("minimum", 0)
             put("description", description)
         }
     }

@@ -29,7 +29,7 @@ Mesh can serve an [MCP](https://modelcontextprotocol.io) server over Streamable 
 
 | Tool | What it does |
 | --- | --- |
-| `get_mesh` | Returns the grid, canvas settings, saved colors with their IDs, and each point's position and color; up to 256 points per call, or the region `rowStart`/`rowEnd`/`colStart`/`colEnd` select |
+| `get_mesh` | Returns the grid, canvas settings, saved colors with their IDs, and each point's position and color; at most 256 points per call, so a bigger grid needs a `rowStart`/`rowEnd`/`colStart`/`colEnd` region holding at most 256 points, and a larger region is rejected |
 | `update_point` | Moves and/or recolors the point at a row and column |
 | `add_color` | Adds a hex color to the custom palette and returns its ID |
 | `undo` / `redo` | Undoes or redoes the last edit, whether you or the agent made it |
