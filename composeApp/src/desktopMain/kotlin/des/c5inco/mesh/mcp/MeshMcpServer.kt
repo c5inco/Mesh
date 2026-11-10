@@ -439,7 +439,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     /**
      * An integer, including one a client wrote with a zero fraction such as 2.0, as JSON Schema allows. Reads the
-     * number's exact decimal value, so 2.0000000000000001 isn't rounded to 2 on the way.
+     * number's exact decimal value, so a fraction that survives as a literal is rejected.
+     *
+     * The MCP SDK re-encodes number literals before a handler sees them, which writes them as a Long or a Double,
+     * so 2.0000000000000001 arrives as 2.0 and is deliberately accepted as an integer: it is 2 in IEEE-754, and
+     * rejecting it would mean rejecting 2.0 too or reading the raw request ahead of the SDK.
      */
     private fun JsonPrimitive.integerOrNull(): Long? {
         val value = content.toBigDecimalOrNull()?.stripTrailingZeros()?.takeIf { it.scale() <= 0 } ?: return null
