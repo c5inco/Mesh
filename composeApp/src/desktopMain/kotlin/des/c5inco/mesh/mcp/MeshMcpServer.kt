@@ -100,11 +100,12 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         addTool(
             name = "update_points",
             description = "Moves and/or recolors many points as a single undoable edit, like update_point for each " +
-                "entry in order. If any entry is invalid, no point changes.",
+                "entry in order. Takes at most $MAX_BATCH_POINTS entries. If any entry is invalid, no point changes.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("points") {
                         put("type", "array")
+                        put("maxItems", MAX_BATCH_POINTS)
                         put("description", "Point edits, each {row, col, x?, y?, colorId?} as in update_point")
                         putJsonObject("items") {
                             put("type", "object")
@@ -239,6 +240,9 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     private suspend fun updatePoints(request: CallToolRequest): CallToolResult = withContext(Dispatchers.Main) {
         val entries = (request.arguments?.get("points") as? JsonArray)
             ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?}")
+        if (entries.size > MAX_BATCH_POINTS) {
+            return@withContext error("points has ${entries.size} entries; the limit is $MAX_BATCH_POINTS, one per point of the largest grid")
+        }
         val paletteIds = configuration.palette().map { it.uid }.toSet()
         val constrainEdges = configuration.uiState.value.constrainEdgePoints
         // Each entry is read against the points as the entries before it leave them, as separate update_point
@@ -393,5 +397,9 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     companion object {
         const val DEFAULT_PORT = 7777
         private const val MAX_RENDER_SIDE = 8192
+
+        // update_points runs on the UI thread, so bound its work. One entry per point of the largest grid is
+        // enough to edit every point once; a longer batch must repeat points, which only adds UI-thread work.
+        const val MAX_BATCH_POINTS = MAX_GRID_SIZE * MAX_GRID_SIZE
     }
 }

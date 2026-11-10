@@ -189,6 +189,27 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `update_points rejects a batch over the advertised limit without changing anything`() = runBlocking {
+        val schema = client.listTools().tools.single { it.name == "update_points" }.inputSchema
+        val maxItems = schema.properties!!["points"]!!.jsonObject["maxItems"]!!.jsonPrimitive.content.toInt()
+        assertEquals(MAX_GRID_SIZE * MAX_GRID_SIZE, maxItems)
+
+        val meshState = configuration.meshState.value
+        val points = configuration.meshPoints.toList()
+        val tooMany = List(maxItems + 1) { mapOf("row" to 1, "col" to 1, "x" to 0.5) }
+        val result = client.callTool("update_points", mapOf("points" to tooMany))
+
+        assertEquals(true, result.isError)
+        assertTrue(result.text().contains("the limit is $maxItems"), result.text())
+        assertEquals(meshState, configuration.meshState.value)
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(false, configuration.canUndo.value, "A rejected batch records no undo step")
+
+        callOk("update_points", mapOf("points" to tooMany.drop(1)))
+        assertEquals(0.5f, configuration.meshPoints[1][1].first.x)
+    }
+
+    @Test
     fun `malformed numbers are rejected rather than ignored, and nothing changes`() = runBlocking {
         val meshState = configuration.meshState.value
         val points = configuration.meshPoints.toList()
