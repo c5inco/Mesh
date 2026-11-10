@@ -146,17 +146,22 @@ class AppConfigurationTest {
         assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
         assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
         assertEquals(0.5f, configuration.meshState.value.blurLevel)
+        // The resized grid undo must bring back, so compare the points rather than their shape.
+        val resizedPoints = configuration.meshPoints.toList()
 
         withContext(Dispatchers.Main) { configuration.undo() }
         assertEquals(List(3) { 4 }, configuration.meshPoints.map { it.size })
         assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
         assertEquals(0.25f, configuration.meshState.value.blurLevel)
+        // The loaded grid, not an evenly spaced one: defaultMeshPointGrid curves its middle row.
+        assertEquals(defaultMeshPointGrid(fakePresetColors.map(SavedColor::uid)), configuration.meshPoints.toList())
         assertFalse(configuration.canUndo.value)
 
         withContext(Dispatchers.Main) { configuration.redo() }
         assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
         assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
         assertEquals(0.5f, configuration.meshState.value.blurLevel)
+        assertEquals(resizedPoints, configuration.meshPoints.toList())
     }
 
     @Test
