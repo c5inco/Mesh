@@ -147,21 +147,80 @@ class MeshMcpServerTest {
     }
 
     @Test
-    fun `update_points changes nothing when any entry is invalid`() = runBlocking {
+    fun `update_points applies repeated edits to one point in order, like separate update_point calls`() = runBlocking {
         val before = configuration.meshPoints.toList()
-        val result = client.callTool(
+        callOk(
             "update_points",
             mapOf(
                 "points" to listOf(
-                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
-                    mapOf("row" to 9, "col" to 0, "x" to 0.5),
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                    mapOf("row" to 1, "col" to 1, "y" to 0.6),
                 )
             ),
         )
 
-        assertEquals(true, result.isError)
-        assertTrue(result.text().startsWith("points[1]:"), result.text())
+        assertEquals(Offset(0.25f, 0.6f) to 3L, configuration.meshPoints[1][1])
+
+        callOk("undo", emptyMap())
         assertEquals(before, configuration.meshPoints.toList())
+    }
+
+    @Test
+    fun `update_points changes nothing when any entry is invalid`() = runBlocking {
+        val before = configuration.meshPoints.toList()
+        val invalidEntries = listOf(
+            mapOf("row" to 9, "col" to 0, "x" to 0.5),
+            mapOf("row" to 1, "col" to 2, "x" to 1.5),
+            mapOf("row" to 2, "col" to 1, "colorId" to 99),
+        )
+        for (position in 0..2) {
+            val entries = mutableListOf<Map<String, Any>>(
+                mapOf("row" to 1, "col" to 1, "x" to 0.25, "colorId" to 3),
+                mapOf("row" to 1, "col" to 2, "y" to 0.6),
+            )
+            entries.add(position, invalidEntries[position])
+            val result = client.callTool("update_points", mapOf("points" to entries))
+
+            assertEquals(true, result.isError)
+            assertTrue(result.text().startsWith("points[$position]:"), result.text())
+            assertEquals(before, configuration.meshPoints.toList())
+        }
+        assertEquals(false, configuration.canUndo.value, "A rejected batch records no undo step")
+    }
+
+    @Test
+    fun `malformed numbers are rejected rather than ignored, and nothing changes`() = runBlocking {
+        val meshState = configuration.meshState.value
+        val points = configuration.meshPoints.toList()
+
+        val calls = listOf(
+            "set_grid" to mapOf("rows" to 5, "cols" to 2.5),
+            "set_grid" to mapOf("rows" to 5, "blur" to "0.5"),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to "0.9", "y" to 0.6),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to "3"),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 3.5),
+            "update_points" to mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "x" to "0.4"),
+                )
+            ),
+            "update_points" to mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "colorId" to "3"),
+                )
+            ),
+        )
+        for ((name, arguments) in calls) {
+            val result = client.callTool(name, arguments)
+            assertEquals(true, result.isError, "$name $arguments: ${result.text()}")
+            assertTrue(Regex("must be (an integer|a number)").containsMatchIn(result.text()), result.text())
+        }
+
+        assertEquals(meshState, configuration.meshState.value)
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(false, configuration.canUndo.value)
     }
 
     @Test
