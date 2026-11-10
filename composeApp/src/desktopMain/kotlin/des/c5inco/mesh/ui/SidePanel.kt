@@ -214,7 +214,10 @@ fun SidePanel(
                         Text("Custom", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
                         Spacer(Modifier.width(8.dp))
                         IconButton(
-                            onClick = { if (colorInput == null) colorInput = ColorInputState() },
+                            onClick = {
+                                val open = colorInput
+                                if (open == null) colorInput = ColorInputState() else open.focusRequester.requestFocus()
+                            },
                             modifier = Modifier
                                 .size(14.dp)
                                 .testTag(MeshTestTags.ADD_CUSTOM_COLOR),

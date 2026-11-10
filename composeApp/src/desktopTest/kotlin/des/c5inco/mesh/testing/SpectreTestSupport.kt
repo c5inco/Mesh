@@ -100,24 +100,42 @@ private suspend fun ComposeAutomator.scrollSidePanelUntil(find: ComposeAutomator
     }
 }
 
-/** The side panel scrolled to [index]: the test tags it composes, and whether it can scroll further. */
-private class SidePanelPage(val index: Int, val itemCount: Int, val atEnd: Boolean, val tags: Set<String>)
+/** The side panel scrolled to [index]: the test tags on screen, and whether it can scroll further. */
+private class SidePanelPage(
+    val index: Int,
+    val itemCount: Int,
+    val atTop: Boolean,
+    val atEnd: Boolean,
+    val tags: Set<String>,
+)
 
 private suspend fun scrollSidePanelTo(index: Int): SidePanelPage? {
+    val before = readSidePanelPage(index) ?: return null
+    if (index == 0 && before.atTop) return before
     withSidePanelList { it.config[SemanticsActions.ScrollToIndex].action?.invoke(index) } ?: return null
-    // The action queues a UI-thread task that scrolls the list and lays it out at once, so the next task
-    // reads the new page. Waiting for idle here instead costs a full frame per page, and a large grid's
-    // frames are slow.
-    return withSidePanelList { list ->
-        val range = list.config[SemanticsProperties.VerticalScrollAxisRange]
-        SidePanelPage(
-            index = index,
-            itemCount = list.config[SemanticsProperties.CollectionInfo].rowCount,
-            atEnd = range.value() >= range.maxValue(),
-            tags = list.visibleTestTags(),
-        )
+    // The action only launches the scroll: the list's scroll position moves at once, but its items are laid
+    // out on a later frame. Wait for the items on screen to change, so the old page isn't recorded under the
+    // new index. A jump that moves less than an item may change nothing, so the wait is bounded.
+    val deadline = TimeSource.Monotonic.markNow() + SIDE_PANEL_SCROLL_TIMEOUT
+    while (true) {
+        val page = readSidePanelPage(index) ?: return null
+        if (page.tags != before.tags || deadline.hasPassedNow()) return page
+        delay(16.milliseconds)
     }
 }
+
+private suspend fun readSidePanelPage(index: Int): SidePanelPage? = withSidePanelList { list ->
+    val range = list.config[SemanticsProperties.VerticalScrollAxisRange]
+    SidePanelPage(
+        index = index,
+        itemCount = list.config[SemanticsProperties.CollectionInfo].rowCount,
+        atTop = range.value() <= 0f,
+        atEnd = range.value() >= range.maxValue(),
+        tags = list.visibleTestTags(),
+    )
+}
+
+private val SIDE_PANEL_SCROLL_TIMEOUT = 1.seconds
 
 /** Runs [block] on the UI thread with the side panel's lazy list, or returns null when no window shows it. */
 @OptIn(ComposeToolingApi::class)

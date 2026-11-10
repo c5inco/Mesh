@@ -144,6 +144,12 @@ fun MeshDocument.open(presetColors: List<SavedColor>, newCustomColorId: () -> Lo
 }
 
 /**
+ * The largest grid the old app could save. It bounds legacy data and must not follow [MAX_GRID_SIZE], which
+ * has since grown.
+ */
+private const val LEGACY_MAX_GRID_SIZE = 10
+
+/**
  * The single mesh Mesh saved before it had documents, as a document: its points, the canvas settings from
  * [savedState] (null when there was no settings file), and every custom color in [colors], which holds the
  * old database's presets and custom colors. Returns null when nothing was saved.
@@ -157,11 +163,12 @@ fun legacyMeshDocument(points: List<MeshPoint>, savedState: MeshState?, colors: 
 
     val state = savedState ?: MeshState()
     val colorIds = colors.map(SavedColor::uid)
-    val rows = state.rows.coerceIn(2, 10)
-    val cols = state.cols.coerceIn(2, 10)
+    val rows = state.rows.coerceIn(2, LEGACY_MAX_GRID_SIZE)
+    val cols = state.cols.coerceIn(2, LEGACY_MAX_GRID_SIZE)
     // Points outside the old app's 10 × 10 limit, or at a negative index, are strays; dropping them keeps the
     // grid within the size a document allows. Points that leave no 2 × 2 grid fall back to a fresh one.
-    val grid = points.filter { it.row in 0 until 10 && it.col in 0 until 10 }.toOffsetGrid()
+    val grid = points.filter { it.row in 0 until LEGACY_MAX_GRID_SIZE && it.col in 0 until LEGACY_MAX_GRID_SIZE }
+        .toOffsetGrid()
         .takeIf { it.size >= 2 && it[0].size >= 2 }
         ?: if (rows == 3 && cols == 4) defaultMeshPointGrid(colorIds) else generateMeshPointGrid(rows, cols, colorIds)
     return meshDocumentOf(
