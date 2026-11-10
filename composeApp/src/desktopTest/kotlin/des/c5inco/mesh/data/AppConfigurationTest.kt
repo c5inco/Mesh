@@ -397,6 +397,19 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `a file with more rows than the editor allows doesn't open`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val row = List(2) { """{"x": 0.5, "y": 0.5, "color": null}""" }.joinToString(prefix = "[", postfix = "]")
+        documentFile.writeText("""{"points": ${List(11) { row }.joinToString(prefix = "[", postfix = "]")}}""")
+
+        val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
+        assertTrue(error.message!!.contains("2 to 10 rows and columns; this one has 11 × 2"), error.message)
+        assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
+        assertEquals(DocumentStatus(), configuration.document.value)
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
     fun `the first launch migrates the saved mesh to a document and later launches reopen it`() = runBlocking {
         val legacyCustomColor = DocumentColor(red = 1, green = 2, blue = 3)
         val legacyMesh = defaultDocument().let { mesh ->

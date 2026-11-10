@@ -101,7 +101,8 @@ class MeshMcpServerTest {
     }
 
     @Test
-    fun `set_grid resizes the grid and sets the blur, and undo takes it back`() = runBlocking {
+    fun `set_grid resizes the grid and sets the blur as one undo step`() = runBlocking {
+        val before = configuration.meshPoints.toList()
         callOk("set_grid", mapOf("rows" to 5, "cols" to 6, "blur" to 0.2))
 
         val mesh = getMesh()
@@ -109,10 +110,21 @@ class MeshMcpServerTest {
         assertEquals(30, mesh["points"]!!.jsonArray.size)
         assertEquals(0.2f, mesh["blurLevel"]!!.jsonPrimitive.float)
 
-        // Rows, columns, and blur are each their own edit, as in the side panel.
-        repeat(3) { callOk("undo", emptyMap()) }
-        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
-        assertEquals(12, configuration.meshPoints.sumOf { it.size })
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints.toList())
+        assertEquals(Triple(3, 4, 0f), configuration.meshState.value.let { Triple(it.rows, it.cols, it.blurLevel) })
+        assertEquals(false, configuration.canUndo.value, "set_grid recorded more than one undo step")
+    }
+
+    @Test
+    fun `quick blur-only set_grid calls are separate undo steps`() = runBlocking {
+        callOk("set_grid", mapOf("blur" to 0.2))
+        callOk("set_grid", mapOf("blur" to 0.4))
+
+        callOk("undo", emptyMap())
+        assertEquals(0.2f, configuration.meshState.value.blurLevel)
+        callOk("undo", emptyMap())
+        assertEquals(0f, configuration.meshState.value.blurLevel)
     }
 
     @Test
@@ -125,9 +137,9 @@ class MeshMcpServerTest {
     }
 
     @Test
-    fun `update_points applies every edit as one undo step`() = runBlocking {
+    fun `update_points applies every edit as one undo step and reports where each point ended up`() = runBlocking {
         val before = configuration.meshPoints.toList()
-        callOk(
+        val result = callOk(
             "update_points",
             mapOf(
                 "points" to listOf(
@@ -141,6 +153,12 @@ class MeshMcpServerTest {
         assertEquals(0.25f to 3L, configuration.meshPoints[1][1].let { it.first.x to it.second })
         assertEquals(0.6f, configuration.meshPoints[1][2].first.y)
         assertEquals(Offset(0.4f, 0f), configuration.meshPoints[0][1].first, "Edge points stay on their edge")
+
+        val reported = reportedPoints(result).associateBy { it.int("row") to it.int("col") }
+        assertEquals(setOf(1 to 1, 1 to 2, 0 to 1), reported.keys)
+        val edge = reported.getValue(0 to 1)
+        assertEquals(listOf(0.4f, 0f), listOf(edge["x"]!!.jsonPrimitive.float, edge["y"]!!.jsonPrimitive.float))
+        assertEquals(3L, reported.getValue(1 to 1)["colorId"]!!.jsonPrimitive.long)
 
         callOk("undo", emptyMap())
         assertEquals(before, configuration.meshPoints.toList())
@@ -193,6 +211,9 @@ class MeshMcpServerTest {
         val schema = client.listTools().tools.single { it.name == "update_points" }.inputSchema
         val maxItems = schema.properties!!["points"]!!.jsonObject["maxItems"]!!.jsonPrimitive.content.toInt()
         assertEquals(MAX_GRID_SIZE * MAX_GRID_SIZE, maxItems)
+        assertEquals("1", schema.properties!!["points"]!!.jsonObject["minItems"]!!.jsonPrimitive.content)
+        val items = schema.properties!!["points"]!!.jsonObject["items"]!!.jsonObject
+        assertEquals("false", items["additionalProperties"]!!.jsonPrimitive.content)
 
         val meshState = configuration.meshState.value
         val points = configuration.meshPoints.toList()
@@ -210,6 +231,66 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `update_points and set_grid report no change instead of an edit that undo would skip`() = runBlocking {
+        // A point the side panel placed outside 0 to 1 must echo back like any other.
+        withContext(Dispatchers.Main) { configuration.updateMeshPoint(1, 1, Offset(2f, 0.5f) to 2L) }
+        val points = configuration.meshPoints.toList()
+        val meshState = configuration.meshState.value
+
+        val echo = getMesh()["points"]!!.jsonArray.map { it.jsonObject.toMap() }
+        val unchanged = callOk("update_points", mapOf("points" to echo)).text()
+        assertTrue(unchanged.startsWith("No change"), unchanged)
+        assertTrue(callOk("set_grid", mapOf("rows" to 3, "cols" to 4)).text().startsWith("No change"))
+
+        assertEquals(true, client.callTool("update_points", mapOf("points" to emptyList<Any>())).isError)
+        assertEquals(true, client.callTool("set_grid", emptyMap()).isError)
+        assertEquals(true, client.callTool("set_grid", mapOf("rows" to null, "blur" to null)).isError)
+
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(meshState, configuration.meshState.value)
+        // Only the side panel's edit is left to undo.
+        callOk("undo", emptyMap())
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `unknown fields in a point edit are rejected, and nothing changes`() = runBlocking {
+        val points = configuration.meshPoints.toList()
+
+        val single = client.callTool("update_point", mapOf("row" to 1, "col" to 1, "x" to 0.4, "color" to 3))
+        assertEquals(true, single.isError)
+        assertTrue(single.text().contains("Unknown field color"), single.text())
+
+        val batch = client.callTool(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 1, "col" to 1, "x" to 0.25),
+                    mapOf("row" to 1, "col" to 2, "X" to 0.5),
+                )
+            ),
+        )
+        assertEquals(true, batch.isError)
+        assertTrue(batch.text().startsWith("points[1]: Unknown field X"), batch.text())
+        assertEquals(points, configuration.meshPoints.toList())
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `null fields count as absent and integral doubles count as integers`() = runBlocking {
+        val (pointBefore, colorBefore) = configuration.meshPoints[1][1]
+        callOk("update_point", mapOf("row" to 1.0, "col" to 1, "x" to 0.4, "y" to null, "colorId" to null))
+        assertEquals(Offset(0.4f, pointBefore.y) to colorBefore, configuration.meshPoints[1][1])
+
+        val xBefore = configuration.meshPoints[1][2].first.x
+        callOk("update_points", mapOf("points" to listOf(mapOf("row" to 1, "col" to 2.0, "x" to null, "y" to 0.6, "colorId" to 3.0))))
+        assertEquals(Offset(xBefore, 0.6f) to 3L, configuration.meshPoints[1][2])
+
+        callOk("set_grid", mapOf("rows" to 5.0, "cols" to null, "blur" to null))
+        assertEquals(5 to 4, configuration.meshState.value.let { it.rows to it.cols })
+    }
+
+    @Test
     fun `malformed numbers are rejected rather than ignored, and nothing changes`() = runBlocking {
         val meshState = configuration.meshState.value
         val points = configuration.meshPoints.toList()
@@ -217,6 +298,9 @@ class MeshMcpServerTest {
         val calls = listOf(
             "set_grid" to mapOf("rows" to 5, "cols" to 2.5),
             "set_grid" to mapOf("rows" to 5, "blur" to "0.5"),
+            "set_grid" to mapOf("rows" to true),
+            "set_grid" to mapOf("rows" to 5, "cols" to 3_000_000_000L),
+            "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 1e300),
             "update_point" to mapOf("row" to 1, "col" to 1, "x" to "0.9", "y" to 0.6),
             "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to "3"),
             "update_point" to mapOf("row" to 1, "col" to 1, "x" to 0.9, "colorId" to 3.5),
@@ -286,6 +370,15 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `render_png rejects a malformed scale instead of rendering at 1x`() = runBlocking {
+        for (scale in listOf(2.5, true, "2")) {
+            assertEquals(true, client.callTool("render_png", mapOf("scale" to scale)).isError, "scale $scale")
+        }
+        val image = callOk("render_png", mapOf("scale" to null)).content.filterIsInstance<ImageContent>().single()
+        assertEquals(640, ImageIO.read(ByteArrayInputStream(Base64.decode(image.data))).width)
+    }
+
+    @Test
     fun `requests from a web page origin are rejected`() = runBlocking {
         val response = httpClient.post("http://127.0.0.1:$port/mcp") {
             header(HttpHeaders.Origin, "https://evil.example")
@@ -336,6 +429,10 @@ class MeshMcpServerTest {
     private suspend fun getMesh(): JsonObject = Json.parseToJsonElement(callOk("get_mesh", emptyMap()).text()).jsonObject
 
     private fun CallToolResult.text() = content.filterIsInstance<TextContent>().joinToString { it.text }
+
+    /** The points update_points reports after "now: ". */
+    private fun reportedPoints(result: CallToolResult) =
+        Json.parseToJsonElement(result.text().substringAfter("now: ")).jsonArray.map { it.jsonObject }
 
     private fun JsonObject.int(key: String) = get(key)!!.jsonPrimitive.content.toInt()
 

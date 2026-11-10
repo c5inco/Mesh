@@ -52,6 +52,10 @@ data class MeshDocument(
         require(points.size >= 2 && points.all { it.size >= 2 && it.size == points[0].size }) {
             "A mesh needs a rectangular grid of at least 2 × 2 points"
         }
+        // The editor, set_grid, and update_points' batch limit all assume this range.
+        require(points.size in MIN_GRID_SIZE..MAX_GRID_SIZE && points[0].size in MIN_GRID_SIZE..MAX_GRID_SIZE) {
+            "A mesh can have $MIN_GRID_SIZE to $MAX_GRID_SIZE rows and columns; this one has ${points.size} × ${points[0].size}"
+        }
     }
 
     fun encode(): String = json.encodeToString(serializer(), this)
