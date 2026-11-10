@@ -2,6 +2,8 @@ package des.c5inco.mesh.data
 
 import androidx.compose.ui.geometry.Offset
 import data.DocumentColor
+import data.MAX_GRID_SIZE
+import data.MIN_GRID_SIZE
 import data.MeshDocument
 import data.MeshState
 import data.Session
@@ -400,10 +402,10 @@ class AppConfigurationTest {
     fun `a file with more rows than the editor allows doesn't open`() = runBlocking {
         val configuration = loadedConfiguration()
         val row = List(2) { """{"x": 0.5, "y": 0.5, "color": null}""" }.joinToString(prefix = "[", postfix = "]")
-        documentFile.writeText("""{"points": ${List(11) { row }.joinToString(prefix = "[", postfix = "]")}}""")
+        documentFile.writeText("""{"points": ${List(MAX_GRID_SIZE + 1) { row }.joinToString(prefix = "[", postfix = "]")}}""")
 
         val error = assertThrows(IllegalArgumentException::class.java) { MeshDocument.decode(documentFile.readText()) }
-        assertTrue(error.message!!.contains("2 to 10 rows and columns; this one has 11 × 2"), error.message)
+        assertTrue(error.message!!.contains("$MIN_GRID_SIZE to $MAX_GRID_SIZE rows and columns; this one has ${MAX_GRID_SIZE + 1} × 2"), error.message)
         assertEquals(DocumentChange.Failed, configuration.openDocument(documentFile))
         assertEquals(DocumentStatus(), configuration.document.value)
         assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
