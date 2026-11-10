@@ -166,8 +166,14 @@ class AppConfiguration(
     private val session = repository.loadSession()
     private val startupFile = session?.lastDocument?.let(::File)
 
+    /**
+     * Whether the last document was read but can't open in this version, such as one holding a grid larger
+     * than the editor allows. Declared before [startupDocument], whose initializer sets it.
+     */
+    private var startupDocumentInvalid = false
+
     /** The document to reopen, read now so that edits made while it loads apply on top of its settings. */
-    private val startupDocument = startupFile?.let(::readDocumentOrNull)
+    private val startupDocument = startupFile?.let { readDocumentOrNull(it) { startupDocumentInvalid = true } }
 
     val meshState = MutableStateFlow(
         startupDocument?.meshState ?: if (session == null) repository.loadLegacyMeshState() else MeshState()
@@ -316,8 +322,9 @@ class AppConfiguration(
         val startup = when {
             startupDocument != null -> StartupDocument(startupDocument, startupFile)
             session == null -> migrateLegacyMesh()
-            // A last document that can't be read now, such as one on a drive that isn't mounted, is tried again next launch.
-            else -> StartupDocument(null, null, recordSession = startupFile == null)
+            // A last document that couldn't be read now, such as one on a drive that isn't mounted, is tried
+            // again next launch; one that was read but can't open is dropped, so it isn't retried forever.
+            else -> StartupDocument(null, null, recordSession = startupFile == null || startupDocumentInvalid)
         }
         withContext(Dispatchers.Main) {
             loadedPresetColors = presets
@@ -496,12 +503,15 @@ class AppConfiguration(
     }
 
     /** Reads a document, or says why it can't and returns null. */
-    private fun readDocumentOrNull(file: File): MeshDocument? = try {
+    private fun readDocumentOrNull(file: File, onInvalid: () -> Unit = {}): MeshDocument? = try {
         MeshDocument.decode(file.readText())
     } catch (e: IOException) {
         Notifications.send("Couldn't open ${file.name}: ${e.message}")
         null
     } catch (e: IllegalArgumentException) {
+        // The file was read but holds something this version can't open, so [onInvalid] can give up on it.
+        // A serialization error is one of these, so a file this version can't parse counts too.
+        onInvalid()
         Notifications.send("Couldn't open ${file.name}: ${e.message}")
         null
     }
