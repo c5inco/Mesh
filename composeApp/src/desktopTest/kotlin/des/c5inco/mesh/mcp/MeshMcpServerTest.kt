@@ -280,6 +280,9 @@ class MeshMcpServerTest {
         val extra = client.callTool("update_points", mapOf("points" to listOf(mapOf("row" to 1, "col" to 1, "x" to 0.25)), "dryRun" to true))
         assertEquals(true, extra.isError)
         assertTrue(extra.text().startsWith("Unknown field dryRun"), extra.text())
+        val misspelledRange = client.callTool("get_mesh", mapOf("row" to 1))
+        assertEquals(true, misspelledRange.isError)
+        assertTrue(misspelledRange.text().startsWith("Unknown field row"), misspelledRange.text())
 
         assertEquals(points, configuration.meshPoints.toList())
         assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
@@ -326,6 +329,8 @@ class MeshMcpServerTest {
                     mapOf("row" to 1, "col" to 2, "colorId" to "3"),
                 )
             ),
+            "get_mesh" to mapOf("rowStart" to 1.5),
+            "get_mesh" to mapOf("colEnd" to "2"),
         )
         for ((name, arguments) in calls) {
             val result = client.callTool(name, arguments)
@@ -423,6 +428,98 @@ class MeshMcpServerTest {
     }
 
     @Test
+    fun `get_mesh on a 64×64 grid returns a bounded summary and reads points by range`() = runBlocking {
+        callOk("set_grid", mapOf("rows" to 64, "cols" to 64))
+
+        val result = callOk("get_mesh", emptyMap())
+        assertTrue(result.text().length < 2_000, "The summary is ${result.text().length} characters long")
+        val summary = Json.parseToJsonElement(result.text()).jsonObject
+        assertEquals(64 to 64, summary.int("rows") to summary.int("cols"))
+        assertEquals(null, summary["points"])
+        assertTrue(
+            summary["pointsOmitted"]!!.jsonPrimitive.content.contains("4096 points"),
+            summary["pointsOmitted"].toString(),
+        )
+        // The settings and the colors stay, so update_point's "call get_mesh for color IDs" still works.
+        assertEquals(3, summary["colors"]!!.jsonArray.size)
+        for (field in listOf("document", "canvasWidth", "canvasHeight", "blurLevel", "constrainEdgePoints")) {
+            assertTrue(summary.containsKey(field), "$field is missing from $summary")
+        }
+
+        val ranged = getMesh(mapOf("rowStart" to 10, "rowEnd" to 13, "colStart" to 20, "colEnd" to 59))
+        assertEquals(3, ranged["colors"]!!.jsonArray.size)
+        assertEquals(null, ranged["pointsOmitted"])
+        val points = ranged["points"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(160, points.size)
+        assertEquals((10..13).flatMap { row -> (20..59).map { row to it } }, points.map { it.int("row") to it.int("col") })
+        for (point in points) {
+            val (offset, colorId) = configuration.meshPoints[point.int("row")][point.int("col")]
+            val where = "row ${point.int("row")}, col ${point.int("col")}"
+            assertEquals(offset.x, point["x"]!!.jsonPrimitive.float, where)
+            assertEquals(offset.y, point["y"]!!.jsonPrimitive.float, where)
+            assertEquals(colorId, point["colorId"]!!.jsonPrimitive.long, where)
+        }
+
+        // 4 rows of 64 columns is exactly the limit; 5 rows is over it, and so is the whole grid by hand.
+        assertEquals(256, getMesh(mapOf("rowStart" to 60))["points"]!!.jsonArray.size)
+        val overLimit = listOf(
+            mapOf("rowStart" to 59),
+            mapOf("rowStart" to 0, "rowEnd" to 63, "colStart" to 0, "colEnd" to 63),
+        )
+        for (range in overLimit) {
+            val tooBig = client.callTool("get_mesh", range)
+            assertEquals(true, tooBig.isError, "$range: ${tooBig.text()}")
+            assertTrue(tooBig.text().contains("the limit is 256"), tooBig.text())
+        }
+    }
+
+    @Test
+    fun `get_mesh returns every point by default up to the read limit`() = runBlocking {
+        callOk("set_grid", mapOf("rows" to 16, "cols" to 16))
+        val atLimit = getMesh()
+        assertEquals(256, atLimit["points"]!!.jsonArray.size)
+        assertEquals(null, atLimit["pointsOmitted"])
+
+        callOk("set_grid", mapOf("rows" to 16, "cols" to 17))
+        val overLimit = getMesh()
+        assertEquals(null, overLimit["points"])
+        assertTrue(
+            overLimit["pointsOmitted"]!!.jsonPrimitive.content.contains("272 points"),
+            overLimit["pointsOmitted"].toString(),
+        )
+    }
+
+    @Test
+    fun `get_mesh rejects ranges outside the grid or out of order`() = runBlocking {
+        val pastEnd = client.callTool("get_mesh", mapOf("rowEnd" to 3))
+        assertEquals(true, pastEnd.isError)
+        assertTrue(pastEnd.text().contains("3 rows and 4 columns"), pastEnd.text())
+
+        for (range in listOf(mapOf("colStart" to -1), mapOf("rowStart" to 2, "rowEnd" to 1))) {
+            val result = client.callTool("get_mesh", range)
+            assertEquals(true, result.isError, "$range: ${result.text()}")
+        }
+        // A rejected range leaves the grid readable.
+        assertEquals(12, getMesh()["points"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `get_mesh advertises inclusive range arguments bounded by the largest grid`() = runBlocking {
+        val schema = client.listTools().tools.single { it.name == "get_mesh" }.inputSchema
+        val properties = schema.properties!!
+
+        assertEquals(setOf("rowStart", "rowEnd", "colStart", "colEnd"), properties.keys)
+        for ((name, property) in properties) {
+            val argument = property.jsonObject
+            assertEquals("integer", argument["type"]!!.jsonPrimitive.content, name)
+            assertEquals("0", argument["minimum"]!!.jsonPrimitive.content, name)
+            assertEquals("${MAX_GRID_SIZE - 1}", argument["maximum"]!!.jsonPrimitive.content, name)
+            assertTrue(argument["description"]!!.jsonPrimitive.content.contains("inclusive"), name)
+        }
+        assertTrue(schema.required.isNullOrEmpty(), "get_mesh takes no required argument")
+    }
+
+    @Test
     fun `render_png draws the mesh colors at the canvas size times scale`() = runBlocking {
         val image = callOk("render_png", mapOf("scale" to 2)).content.filterIsInstance<ImageContent>().single()
         val png = ImageIO.read(ByteArrayInputStream(Base64.decode(image.data)))
@@ -436,7 +533,8 @@ class MeshMcpServerTest {
     private suspend fun callOk(name: String, arguments: Map<String, Any?>): CallToolResult =
         client.callTool(name, arguments).also { assertTrue(it.isError != true, "$name failed: ${it.text()}") }
 
-    private suspend fun getMesh(): JsonObject = Json.parseToJsonElement(callOk("get_mesh", emptyMap()).text()).jsonObject
+    private suspend fun getMesh(arguments: Map<String, Any?> = emptyMap()): JsonObject =
+        Json.parseToJsonElement(callOk("get_mesh", arguments).text()).jsonObject
 
     private fun CallToolResult.text() = content.filterIsInstance<TextContent>().joinToString { it.text }
 

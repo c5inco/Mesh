@@ -36,6 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -68,17 +69,28 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         serverInfo = Implementation(name = "mesh", version = "1.0.0"),
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
-            "Call get_mesh first to read the grid and the color IDs, then edit with set_grid, update_point (or update_points for many at once), " +
-            "and add_color, " +
+            "Call get_mesh first to read the grid and the color IDs; a grid of more than $MAX_READ_POINTS points " +
+            "comes back without its points unless you pass rowStart, rowEnd, colStart, and colEnd, so read the region " +
+            "you are editing. Then edit with set_grid, update_point (or update_points for many at once), and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
         addTool(
             name = "get_mesh",
             description = "Returns the open document's mesh as JSON: the document's name and file, grid size, " +
-                "canvas settings, the preset and custom colors with their IDs, and every point's row, column, " +
+                "canvas settings, the preset and custom colors with their IDs, and the points' row, column, " +
                 "position, and color ID. Positions are fractions of the canvas from 0 to 1, with (0, 0) at the top " +
-                "left. Color IDs belong to the open document and change when another document opens.",
-        ) { configuration.awaitMeshLoaded(); getMesh() }
+                "left. Returns at most $MAX_READ_POINTS points per call: pass rowStart, rowEnd, colStart, and " +
+                "colEnd to read a region of a larger grid, which otherwise comes back without its points. " +
+                "Color IDs belong to the open document and change when another document opens.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putRangeProperty("rowStart", "First row to return, inclusive. Defaults to the grid's first row.")
+                    putRangeProperty("rowEnd", "Last row to return, inclusive. Defaults to the grid's last row.")
+                    putRangeProperty("colStart", "First column to return, inclusive. Defaults to the grid's first column.")
+                    putRangeProperty("colEnd", "Last column to return, inclusive. Defaults to the grid's last column.")
+                },
+            ),
+        ) { configuration.awaitMeshLoaded(); getMesh(it) }
 
         addTool(
             name = "update_point",
@@ -188,46 +200,95 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         ) { configuration.awaitMeshLoaded(); renderPng(it) }
     }
 
-    private suspend fun getMesh(): CallToolResult = withContext(Dispatchers.Main) {
-        val colors = configuration.palette()
-        val meshState = configuration.meshState.value
-        val document = configuration.document.value
-        val json = buildJsonObject {
-            put("document", buildJsonObject {
-                put("name", document.name)
-                put("file", document.file?.absolutePath)
-                put("modified", document.modified)
-            })
-            put("rows", meshState.rows)
-            put("cols", meshState.cols)
-            put("canvasWidth", meshState.canvasWidth)
-            put("canvasHeight", meshState.canvasHeight)
-            put("blurLevel", meshState.blurLevel)
-            put("constrainEdgePoints", configuration.constrainEdgePoints)
-            put("colors", buildJsonArray {
-                colors.forEach { color ->
-                    add(buildJsonObject {
-                        put("id", color.uid)
-                        put("hex", "#" + colors.findColor(color.uid).toHexStringNoHash(includeAlpha = true))
-                        put("preset", color.preset)
-                    })
-                }
-            })
-            put("points", buildJsonArray {
-                configuration.meshPoints.forEachIndexed { row, points ->
-                    points.forEachIndexed { col, (offset, colorId) ->
+    /**
+     * Returns the document, the settings, and the colors, plus the points the caller asked for. A whole grid of more
+     * than [MAX_READ_POINTS] points comes back without them, so one call can't flood an agent's context; a requested
+     * range over the limit is an error, never a silent cut.
+     */
+    private suspend fun getMesh(request: CallToolRequest): CallToolResult {
+        val args = request.arguments ?: JsonObject(emptyMap())
+        val range = try {
+            args.requireOnly(RANGE_FIELDS, "get_mesh")
+            MeshRange(
+                rowStart = args.optionalInt("rowStart"),
+                rowEnd = args.optionalInt("rowEnd"),
+                colStart = args.optionalInt("colStart"),
+                colEnd = args.optionalInt("colEnd"),
+            )
+        } catch (e: InvalidArgument) {
+            return error(e.message)
+        }
+
+        return withContext(Dispatchers.Main) {
+            val colors = configuration.palette()
+            val meshState = configuration.meshState.value
+            val document = configuration.document.value
+            val points = configuration.meshPoints
+            val grid = "${meshState.rows} rows and ${meshState.cols} columns"
+            val firstRow = range.rowStart ?: 0
+            val lastRow = range.rowEnd ?: meshState.rows - 1
+            val firstCol = range.colStart ?: 0
+            val lastCol = range.colEnd ?: meshState.cols - 1
+            // A range is validated against the grid, not clamped: an end past the grid is a mistake worth reporting.
+            if (firstRow !in 0 until meshState.rows) return@withContext error("rowStart $firstRow is outside the grid; it has $grid")
+            if (lastRow !in 0 until meshState.rows) return@withContext error("rowEnd $lastRow is outside the grid; it has $grid")
+            if (firstRow > lastRow) return@withContext error("rowStart $firstRow is past rowEnd $lastRow")
+            if (firstCol !in 0 until meshState.cols) return@withContext error("colStart $firstCol is outside the grid; it has $grid")
+            if (lastCol !in 0 until meshState.cols) return@withContext error("colEnd $lastCol is outside the grid; it has $grid")
+            if (firstCol > lastCol) return@withContext error("colStart $firstCol is past colEnd $lastCol")
+
+            val count = (lastRow - firstRow + 1) * (lastCol - firstCol + 1)
+            val omitted = range.isWholeGrid && count > MAX_READ_POINTS
+            if (!range.isWholeGrid && count > MAX_READ_POINTS) {
+                return@withContext error("The range has $count points; the limit is $MAX_READ_POINTS per call, so pass a smaller range")
+            }
+
+            val json = buildJsonObject {
+                put("document", buildJsonObject {
+                    put("name", document.name)
+                    put("file", document.file?.absolutePath)
+                    put("modified", document.modified)
+                })
+                put("rows", meshState.rows)
+                put("cols", meshState.cols)
+                put("canvasWidth", meshState.canvasWidth)
+                put("canvasHeight", meshState.canvasHeight)
+                put("blurLevel", meshState.blurLevel)
+                put("constrainEdgePoints", configuration.constrainEdgePoints)
+                put("colors", buildJsonArray {
+                    colors.forEach { color ->
                         add(buildJsonObject {
-                            put("row", row)
-                            put("col", col)
-                            put("x", offset.x)
-                            put("y", offset.y)
-                            put("colorId", colorId)
+                            put("id", color.uid)
+                            put("hex", "#" + colors.findColor(color.uid).toHexStringNoHash(includeAlpha = true))
+                            put("preset", color.preset)
                         })
                     }
+                })
+                if (omitted) {
+                    put(
+                        "pointsOmitted",
+                        "The grid has $count points and get_mesh returns at most $MAX_READ_POINTS per call; pass " +
+                            "rowStart, rowEnd, colStart, and colEnd to read a region, or call render_png to see the mesh.",
+                    )
+                } else {
+                    put("points", buildJsonArray {
+                        for (row in firstRow..lastRow) {
+                            for (col in firstCol..lastCol) {
+                                val (offset, colorId) = points[row][col]
+                                add(buildJsonObject {
+                                    put("row", row)
+                                    put("col", col)
+                                    put("x", offset.x)
+                                    put("y", offset.y)
+                                    put("colorId", colorId)
+                                })
+                            }
+                        }
+                    })
                 }
-            })
+            }
+            CallToolResult(content = listOf(TextContent(json.toString())))
         }
-        CallToolResult(content = listOf(TextContent(json.toString())))
     }
 
     /** Runs on the UI thread without suspending, so the point and palette can't change between read and write. */
@@ -425,6 +486,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     /** A tool argument the tool can't use; the tool reports [message] and changes nothing. */
     private class InvalidArgument(override val message: String) : Exception(message)
 
+    /** The inclusive, 0-based point range a get_mesh call asked for; a null end means the grid's last row or column. */
+    private class MeshRange(val rowStart: Int?, val rowEnd: Int?, val colStart: Int?, val colEnd: Int?) {
+        val isWholeGrid = rowStart == null && rowEnd == null && colStart == null && colEnd == null
+    }
+
     // Strict readers: an absent or null field is null, and a field that is present but not a number of the right
     // kind, such as a string, a boolean, or a fraction where an integer belongs, is an InvalidArgument.
     private fun JsonObject.optionalInt(key: String) =
@@ -463,6 +529,14 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     /** Whether a requested coordinate is outside 0–1; echoing the [current] one back is always allowed. */
     private fun Float?.isOutOfRange(current: Float) = this != null && this != current && this !in 0f..1f
 
+    /** Adds an inclusive get_mesh range argument: an index of the largest grid, from 0. */
+    private fun JsonObjectBuilder.putRangeProperty(name: String, description: String) {
+        putJsonObject(name) {
+            put("type", "integer"); put("minimum", 0); put("maximum", MAX_GRID_SIZE - 1)
+            put("description", description)
+        }
+    }
+
     companion object {
         const val DEFAULT_PORT = 7777
         private const val MAX_RENDER_SIDE = 8192
@@ -471,6 +545,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         // enough to edit every point once; a longer batch must repeat points, which only adds UI-thread work.
         const val MAX_BATCH_POINTS = MAX_GRID_SIZE * MAX_GRID_SIZE
 
+        // get_mesh returns at most this many points, so one call can't flood an agent's context: 16×16 is about
+        // 16 KB of JSON, while the largest grid's 4,096 points are a few hundred KB.
+        const val MAX_READ_POINTS = 256
+
         private val POINT_EDIT_FIELDS = setOf("row", "col", "x", "y", "colorId")
+        private val RANGE_FIELDS = setOf("rowStart", "rowEnd", "colStart", "colEnd")
     }
 }
