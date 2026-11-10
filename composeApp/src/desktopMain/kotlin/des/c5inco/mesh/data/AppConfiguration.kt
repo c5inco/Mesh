@@ -34,6 +34,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
@@ -193,6 +195,19 @@ class AppConfiguration(
     /** Suspends until the startup document has loaded, so callers never see an empty grid or palette. */
     suspend fun awaitMeshLoaded() = loadStartupDocument.await()
 
+    /** The open document's last write that failed, or null when its file holds every edit. */
+    data class SaveFailure(val message: String, val file: File?)
+
+    private val _saveFailure = MutableStateFlow<SaveFailure?>(null)
+
+    /** The last autosave that failed, for the toolbar to show next to its retry. */
+    val saveFailure: StateFlow<SaveFailure?> = _saveFailure.asStateFlow()
+
+    /** Tries the open document's failed autosave again, rather than waiting for the next edit. */
+    fun retrySave() {
+        saveRequests.trySend(Unit)
+    }
+
     /** The open document and the file to autosave it to, captured together on the UI thread after each edit. */
     private class PendingSave(val document: MeshDocument, val file: File, val generation: Int, val edits: Long)
 
@@ -217,6 +232,7 @@ class AppConfiguration(
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
                     println("Autosave failed, retrying: ${e.message}")
+                    _saveFailure.value = SaveFailure(e.message ?: "Couldn't save", latestSave?.file ?: document.value.file)
                     delay(AUTOSAVE_DELAY)
                     saveRequests.trySend(Unit)
                 }
@@ -284,6 +300,7 @@ class AppConfiguration(
             if (save == null || save === lastWrittenSave) return@withLock
             writeDocument(save.document, save.file)
             lastWrittenSave = save
+            _saveFailure.value = null
             // The file now holds the document, unless it was edited or replaced since the capture.
             document.update {
                 val current = generation.get() == save.generation && it.file == save.file && edits.get() == save.edits

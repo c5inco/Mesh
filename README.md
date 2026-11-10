@@ -11,8 +11,8 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 - **Palette:** Add hex colors to the saved palette, remove unused ones, and assign colors per point.
 - **Canvas:** Configure canvas dimensions (fixed size or fill) and background color.
 - **Undo/redo:** Undo with ⌘Z (Ctrl+Z) and redo with ⇧⌘Z (Ctrl+Shift+Z or Ctrl+Y). Covers point, grid, blur, and background edits, including ones an agent makes.
-- **Export:** Copy Kotlin code for an official `MeshGradientPainter` and a `meshGradientModifier` that includes the current blur and required imports. Apply it to a sized Composable with `Modifier.then(meshGradientModifier)`, or export a PNG at 1x, 2x, or 3x scale.
-- **Persistence:** Grid state and saved colors autosave locally to a Room/SQLite database.
+- **Export:** Copy Kotlin code for an official `MeshGradientPainter` and a `meshGradientModifier` that includes the current blur and required imports. Apply it to a sized Composable with `Modifier.then(meshGradientModifier)`, or export a PNG at 1x, 2x, or 3x scale. Both live in the export control at the end of the title bar, which names the pixel size it will produce.
+- **Persistence:** Grid state and saved colors autosave locally to a Room/SQLite database. Documents save themselves to their `.mesh` file a second after each edit; the title bar says nothing while saves succeed and shows a **Couldn't save** retry when one fails.
 - **Agent access (MCP):** Coding agents can read and edit the open mesh through an MCP server. See [below](#agent-access-mcp).
 
 ### Roadmap
@@ -25,7 +25,7 @@ A desktop editor for creating mesh gradients in Compose, built with [Compose Mul
 
 ## Agent access (MCP)
 
-Mesh can serve an [MCP](https://modelcontextprotocol.io) server over Streamable HTTP so an agent can edit the gradient you are looking at. It is off by default: turn on **Let agents edit this mesh** in the side panel's MCP server section, where you can also change the port (default `7777`) and copy the URL. The setting is remembered across launches. The server listens only on localhost and rejects requests from other origins.
+Mesh can serve an [MCP](https://modelcontextprotocol.io) server over Streamable HTTP so an agent can edit the gradient you are looking at. It is off by default: the agent chip at the end of the title bar says **Agents off** until you open it and turn on **Let agents edit this mesh**, where you can also change the port (default `7777`) and copy the URL. The setting is remembered across launches. Once an agent connects, the chip names it, and turns red if the port is already taken. The server listens only on localhost and rejects requests from other origins.
 
 | Tool | What it does |
 | --- | --- |

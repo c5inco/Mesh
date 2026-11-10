@@ -21,6 +21,7 @@ import des.c5inco.mesh.ui.meshGradientPainter
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.modelcontextprotocol.kotlin.sdk.server.ClientConnection
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
@@ -48,6 +49,7 @@ import model.SavedColor
 import model.findColor
 import model.withUpdatedMeshPoint
 import org.jetbrains.skia.EncodedImageFormat
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.encoding.Base64
 import kotlin.math.roundToInt
 
@@ -59,10 +61,44 @@ import kotlin.math.roundToInt
  */
 class MeshMcpServer(private val configuration: AppConfiguration) {
 
+    /**
+     * The server every session connects to. The SDK calls its factory once per session, so returning the
+     * same server keeps one session registry, which is what lets [connectedClients] see them all.
+     */
+    private val server by lazy { createServer() }
+
+    /** When an agent last called a tool, or 0 if none has since the app started. */
+    private val lastToolCall = AtomicLong(0)
+
     fun start(port: Int = DEFAULT_PORT): EmbeddedServer<*, *> =
         embeddedServer(CIO, host = "127.0.0.1", port = port) {
-            mcpStreamableHttp { createServer() }
+            mcpStreamableHttp { server }
         }.start(wait = false)
+
+    /**
+     * The names of the clients connected right now, as each sent them when it initialized. A client that
+     * has connected but not finished initializing has no name yet, so it is not counted.
+     */
+    fun connectedClients(): List<String> =
+        server.sessions.values.mapNotNull { session -> session.clientVersion?.name }.distinct()
+
+    /** When an agent last called a tool, or 0 if none has since the app started. */
+    fun lastToolCallMillis(): Long = lastToolCall.get()
+
+    /**
+     * Registers [handler] as a tool, recording the call so the toolbar can show an agent at work.
+     */
+    private fun Server.addTrackedTool(
+        name: String,
+        description: String,
+        inputSchema: ToolSchema = ToolSchema(),
+        handler: suspend ClientConnection.(CallToolRequest) -> CallToolResult,
+    ) {
+        addTool(name = name, description = description, inputSchema = inputSchema) { request ->
+            lastToolCall.set(System.currentTimeMillis())
+            handler(request)
+        }
+    }
 
     private fun createServer() = Server(
         serverInfo = Implementation(name = "mesh", version = "1.0.0"),
@@ -72,7 +108,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             "and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
-        addTool(
+        addTrackedTool(
             name = "get_mesh",
             description = "Returns the open document's mesh as JSON: the document's name and file, grid size, " +
                 "canvas settings, the preset and custom colors with their IDs, and every point's row, column, " +
@@ -80,7 +116,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                 "left. Color IDs belong to the open document and change when another document opens.",
         ) { configuration.awaitMeshLoaded(); getMesh() }
 
-        addTool(
+        addTrackedTool(
             name = "update_point",
             description = "Moves and/or recolors the point at a row and column. Omitted fields keep their " +
                 "current value; fields other than row, col, x, y, and colorId are rejected. When edge constraints " +
@@ -97,7 +133,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             ),
         ) { configuration.awaitMeshLoaded(); updatePoint(it) }
 
-        addTool(
+        addTrackedTool(
             name = "update_points",
             description = "Moves and/or recolors many points as a single undoable edit, like update_point for each " +
                 "entry in order, and returns where each edited point ended up. Takes 1 to $MAX_BATCH_POINTS entries. " +
@@ -127,7 +163,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             ),
         ) { configuration.awaitMeshLoaded(); updatePoints(it) }
 
-        addTool(
+        addTrackedTool(
             name = "add_color",
             description = "Adds a custom color to the open document and returns its color ID.",
             inputSchema = ToolSchema(
@@ -141,7 +177,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             ),
         ) { configuration.awaitMeshLoaded(); addColor(it) }
 
-        addTool(
+        addTrackedTool(
             name = "set_grid",
             description = "Changes the grid size and/or blur as one undoable edit; pass at least one. Omitted fields " +
                 "keep their current value. Changing " +
@@ -164,17 +200,17 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             ),
         ) { configuration.awaitMeshLoaded(); setGrid(it) }
 
-        addTool(
+        addTrackedTool(
             name = "undo",
             description = "Undoes the last edit to the mesh, whether the user or an agent made it.",
         ) { undoOrRedo(redo = false) }
 
-        addTool(
+        addTrackedTool(
             name = "redo",
             description = "Redoes the last undone edit.",
         ) { undoOrRedo(redo = true) }
 
-        addTool(
+        addTrackedTool(
             name = "render_png",
             description = "Renders the current mesh to a PNG image at the canvas size, without point handles.",
             inputSchema = ToolSchema(

@@ -74,7 +74,7 @@ class MeshGuiTest {
             val rowsInput = waitForSidePanelTag(MeshTestTags.ROWS_INPUT)
             assertTrue(rowsInput.editableText == "3", "Rows input should default to 3")
 
-            assertEquals("Untitled", waitForSidePanelTag(MeshTestTags.DOCUMENT_NAME).text)
+            assertEquals("Untitled", waitForTestTag(MeshTestTags.DOCUMENT).text)
             assertEquals("Untitled", fixture.windowTitle, "Showing the document should not edit it")
 
             val showPoints = waitForSidePanelTag(MeshTestTags.SHOW_POINTS)
@@ -106,7 +106,9 @@ class MeshGuiTest {
             waitForTestTag(MeshTestTags.APP)
             waitForVisualIdle()
 
-            performSemanticsClick(waitForSidePanelTag(MeshTestTags.EXPORT_CODE))
+            performSemanticsClick(waitForTestTag(MeshTestTags.EXPORT_SCALE_MENU))
+            waitForVisualIdle()
+            performSemanticsClick(waitForText("Copy points as Kotlin"))
             waitForVisualIdle()
 
             waitForText("📋 Points copied to the clipboard!")
@@ -224,7 +226,9 @@ class MeshGuiTest {
             waitForVisualIdle()
             assertEquals("Untitled — Edited", fixture.windowTitle)
 
-            performSemanticsClick(waitForSidePanelTag(MeshTestTags.NEW_DOCUMENT))
+            performSemanticsClick(waitForTestTag(MeshTestTags.DOCUMENT))
+            waitForVisualIdle()
+            performSemanticsClick(waitForText("New"))
             waitForTestTag(MeshTestTags.DOCUMENT_PROMPT)
             waitForText("Save changes to “Untitled”?")
             performSemanticsClick(waitForText("Don’t Save"))
@@ -290,7 +294,9 @@ class MeshGuiTest {
                 waitForSidePanelNode("the side panel to show a $MAX_GRID_SIZE-column grid") {
                     findOneByTestTag(MeshTestTags.COLS_INPUT)?.takeIf { it.editableText == "$MAX_GRID_SIZE" }
                 }
-                waitForSidePanelTag(MeshTestTags.pointColor(0, MAX_GRID_SIZE - 1))
+                // The window gives its title bar 40dp, so the panel pages through a 64-row grid more
+                // slowly than it used to; the deepest scroll in the suite gets a longer budget.
+                waitForSidePanelTag(MeshTestTags.pointColor(0, MAX_GRID_SIZE - 1), timeout = 60.seconds)
                 waitForVisualIdle()
 
                 // A window shows a few dozen point editors; composing every one of them would be thousands.
@@ -313,8 +319,10 @@ class MeshGuiTest {
                 }
 
                 waitForSidePanelTag(MeshTestTags.pointColor(MAX_GRID_SIZE - 1, MAX_GRID_SIZE - 1))
-                assertNull(findOneByTestTag(MeshTestTags.DOCUMENT_NAME), "The document controls should be scrolled far away")
-                assertEquals("Untitled", waitForSidePanelTag(MeshTestTags.DOCUMENT_NAME).text)
+                assertNull(
+                    findOneByTestTag(MeshTestTags.ADD_CUSTOM_COLOR),
+                    "The Colors section at the top of the panel should be scrolled far away",
+                )
             }
         }
     }

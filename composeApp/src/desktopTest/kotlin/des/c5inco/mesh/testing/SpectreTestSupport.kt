@@ -66,8 +66,11 @@ suspend fun ComposeAutomator.waitForSidePanelNode(
         find() ?: scrollSidePanelUntil(find)
     }
 
-suspend fun ComposeAutomator.waitForSidePanelTag(tag: String): AutomatorNode =
-    waitForSidePanelNode("side panel node with testTag '$tag'") { findOneByTestTag(tag) }
+suspend fun ComposeAutomator.waitForSidePanelTag(
+    tag: String,
+    timeout: Duration = 20.seconds,
+): AutomatorNode =
+    waitForSidePanelNode("side panel node with testTag '$tag'", timeout = timeout) { findOneByTestTag(tag) }
 
 suspend fun ComposeAutomator.waitForSidePanelText(text: String): AutomatorNode =
     waitForSidePanelNode("side panel node with text '$text'") { findOneByText(text) }
