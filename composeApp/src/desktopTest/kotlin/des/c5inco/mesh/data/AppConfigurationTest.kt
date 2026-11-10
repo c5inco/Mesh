@@ -129,6 +129,37 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `undoing a resize made while loading restores the loaded grid and blur`() = runBlocking {
+        val presetsGate = CompletableDeferred<Unit>()
+        val file = writeDocument(documentFile, MeshState(blurLevel = 0.25f))
+        val configuration = AppConfiguration(
+            FakeDataRepository(
+                presetColors = flow { presetsGate.await(); emit(fakePresetColors) },
+                documentsDirectory = directory,
+                session = Session(lastDocument = file.absolutePath),
+            )
+        )
+
+        withContext(Dispatchers.Main) { configuration.setGrid(rows = 5, cols = 6, blur = 0.5f) }
+        presetsGate.complete(Unit)
+        configuration.awaitMeshLoaded()
+        assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
+        assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(0.5f, configuration.meshState.value.blurLevel)
+
+        withContext(Dispatchers.Main) { configuration.undo() }
+        assertEquals(List(3) { 4 }, configuration.meshPoints.map { it.size })
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(0.25f, configuration.meshState.value.blurLevel)
+        assertFalse(configuration.canUndo.value)
+
+        withContext(Dispatchers.Main) { configuration.redo() }
+        assertEquals(List(5) { 6 }, configuration.meshPoints.map { it.size })
+        assertEquals(5 to 6, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(0.5f, configuration.meshState.value.blurLevel)
+    }
+
+    @Test
     fun `setGrid with a size or blur out of range changes nothing`() = runBlocking {
         val configuration = loadedConfiguration()
         val points = configuration.meshPoints.toList()
