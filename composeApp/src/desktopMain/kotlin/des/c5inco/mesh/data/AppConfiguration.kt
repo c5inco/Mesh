@@ -409,6 +409,8 @@ class AppConfiguration(
         meshPoints.clear()
         meshPoints.addAll(opened.points)
         history.clear()
+        // A failed save belongs to the document that had it, not to whatever opens next.
+        _saveFailure.value = null
         document.value = DocumentStatus(file, modified)
         if (recordSession) sessions.value = Session(lastDocument = file?.absolutePath)
     }
@@ -496,6 +498,8 @@ class AppConfiguration(
                 }
                 // Another document may have opened while the file was being written.
                 if (generation.get() == save.generation) {
+                    // The file holds the edits now, whether or not autosave ever managed to write them.
+                    _saveFailure.value = null
                     document.value = DocumentStatus(file, modified = edits.get() != save.edits)
                     sessions.value = Session(lastDocument = file.absolutePath)
                     // Edits made during the write belong in the document's new file.

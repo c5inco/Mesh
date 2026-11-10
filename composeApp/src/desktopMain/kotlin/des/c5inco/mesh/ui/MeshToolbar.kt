@@ -32,9 +32,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import des.c5inco.mesh.data.AppConfiguration
@@ -60,8 +65,10 @@ import org.jetbrains.jewel.ui.component.separator
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.theme.colorPalette
+import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.window.DecoratedWindowScope
 import org.jetbrains.jewel.window.TitleBar
+import androidx.compose.ui.window.PopupPositionProvider
 import java.io.File
 
 private val isMac = System.getProperty("os.name").lowercase().contains("mac")
@@ -75,8 +82,23 @@ private fun pressedColor(): Color =
     JewelTheme.colorPalette.grayOrNull(4) ?: requireNotNull(IntUiDarkTheme.colors.grayOrNull(4))
 
 @Composable
-private fun idleColor(): Color =
-    JewelTheme.colorPalette.grayOrNull(7) ?: requireNotNull(IntUiDarkTheme.colors.grayOrNull(7))
+private fun gray(step: Int): Color =
+    JewelTheme.colorPalette.grayOrNull(step) ?: requireNotNull(IntUiDarkTheme.colors.grayOrNull(step))
+
+@Composable
+private fun idleColor(): Color = gray(7)
+
+/** Secondary text in the bar: one step lighter than the disabled grey the panels use. */
+@Composable
+private fun mutedColor(): Color = gray(8)
+
+/** A control's outline, so the export control reads as raised rather than cut into the bar. */
+@Composable
+private fun controlBorder(): Color = gray(5)
+
+/** The hairline between groups inside the bar. */
+@Composable
+private fun barDivider(): Color = gray(3)
 
 /** The green of a live agent connection, matching the canvas's own point handle. */
 private val ConnectedGreen = Color(0xFF62B543)
@@ -209,6 +231,7 @@ private fun DocumentWidget(
                 key = AllIconsKeys.General.ChevronDown,
                 iconClass = AllIconsKeys::class.java,
                 contentDescription = null,
+                tint = mutedColor(),
                 modifier = Modifier.size(12.dp),
             )
         }
@@ -287,14 +310,14 @@ private fun SaveFailureWidget(
                         Text("Couldn't save ${failure.file?.name ?: "this document"}", color = error)
                         Spacer(Modifier.height(6.dp))
                         failure.file?.let {
-                            Text(it.absolutePath, fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+                            Text(it.absolutePath, fontSize = 12.sp, color = mutedColor())
                         }
-                        Text(failure.message, fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+                        Text(failure.message, fontSize = 12.sp, color = mutedColor())
                         Spacer(Modifier.height(6.dp))
                         Text(
                             "Your latest edits are only in this window. Mesh keeps trying every second.",
                             fontSize = 12.sp,
-                            color = JewelTheme.globalColors.text.info,
+                            color = mutedColor(),
                         )
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -352,13 +375,22 @@ private fun AgentWidget(
             StatusDot(tone)
             Text(
                 text = label,
-                color = if (tone == StatusTone.Blocked) JewelTheme.globalColors.text.error else Color.Unspecified,
+                color = when (tone) {
+                    StatusTone.Blocked -> JewelTheme.globalColors.text.error
+                    StatusTone.Connected -> Color.Unspecified
+                    StatusTone.Waiting, StatusTone.Off -> mutedColor()
+                },
                 maxLines = 1,
             )
         }
 
         if (popupOpen) {
-            PopupContainer(onDismissRequest = { popupOpen = false }, horizontalAlignment = Alignment.End) {
+            val gapPx = with(LocalDensity.current) { 8.dp.roundToPx() }
+            PopupContainer(
+                onDismissRequest = { popupOpen = false },
+                horizontalAlignment = Alignment.End,
+                popupPositionProvider = remember(gapPx) { BelowAnchorPositionProvider(gapPx) },
+            ) {
                 Column(Modifier.width(320.dp).padding(12.dp)) {
                     CheckboxRow(
                         text = "Let agents edit this mesh",
@@ -367,19 +399,23 @@ private fun AgentWidget(
                         modifier = Modifier.testTag(MeshTestTags.MCP_SERVER_ENABLED),
                     )
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = agentStatusLine(state),
-                        fontSize = 12.sp,
-                        color = if (tone == StatusTone.Blocked) {
-                            JewelTheme.globalColors.text.error
-                        } else {
-                            JewelTheme.globalColors.text.info
-                        },
-                        modifier = Modifier.testTag(MeshTestTags.MCP_SERVER_STATUS),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        StatusDot(tone)
+                        Text(
+                            text = agentStatusLine(state),
+                            fontSize = 12.sp,
+                            color = if (tone == StatusTone.Blocked) {
+                                JewelTheme.globalColors.text.error
+                            } else {
+                                mutedColor()
+                            },
+                            modifier = Modifier.testTag(MeshTestTags.MCP_SERVER_STATUS),
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
-                    Text("Port", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
-                    Spacer(Modifier.height(4.dp))
                     DimensionInputField(
                         value = state.port,
                         min = 1024,
@@ -391,7 +427,7 @@ private fun AgentWidget(
                     )
                     if (running != null) {
                         Spacer(Modifier.height(12.dp))
-                        Text("Connect an agent", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
+                        Text("Connect an agent", fontSize = 12.sp, color = mutedColor())
                         Spacer(Modifier.height(4.dp))
                         CopyRow(text = running.url, label = "Copy")
                         Spacer(Modifier.height(6.dp))
@@ -401,7 +437,7 @@ private fun AgentWidget(
                             "Agents can read the mesh, move and recolor points, add colors, undo, and render " +
                                 "PNGs. Their edits land in your undo history.",
                             fontSize = 12.sp,
-                            color = JewelTheme.globalColors.text.info,
+                            color = mutedColor(),
                         )
                     }
                 }
@@ -432,7 +468,7 @@ private fun ExportWidget(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(6.dp)
-    val border = JewelTheme.globalColors.borders.normal
+    val border = controlBorder()
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -454,12 +490,13 @@ private fun ExportWidget(
                     .padding(horizontal = 8.dp)
                     .testTag(MeshTestTags.EXPORT_SCALE_MENU),
             ) {
-                Text("@${scale}x")
-                Text(pixelSize(canvasSize, scale), color = JewelTheme.globalColors.text.info)
+                Text("@${scale}x", style = JewelTheme.typography.labelTextStyle)
+                Text(pixelSize(canvasSize, scale), style = JewelTheme.typography.labelTextStyle, color = mutedColor())
                 Icon(
                     key = AllIconsKeys.General.ChevronDown,
                     iconClass = AllIconsKeys::class.java,
                     contentDescription = null,
+                    tint = mutedColor(),
                     modifier = Modifier.size(12.dp),
                 )
             }
@@ -479,7 +516,8 @@ private fun ExportWidget(
                                     Text("PNG @${option}x")
                                     Text(
                                         pixelSize(canvasSize, option),
-                                        color = JewelTheme.globalColors.text.info,
+                                        style = JewelTheme.typography.labelTextStyle,
+                                        color = mutedColor(),
                                     )
                                 }
                             }
@@ -492,7 +530,7 @@ private fun ExportWidget(
             }
         }
 
-        Spacer(Modifier.width(1.dp).fillMaxHeight().background(border))
+        Spacer(Modifier.width(1.dp).fillMaxHeight().background(barDivider()))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -519,15 +557,38 @@ private fun ExportGlyph(modifier: Modifier = Modifier) {
     Spacer(
         modifier.size(14.dp).drawBehind {
             val stroke = 1.3.dp.toPx()
-            val head = 0.38f * size.height
-            drawLine(color, Offset(size.width / 2, size.height * 0.72f), Offset(size.width / 2, size.height * 0.08f), stroke, StrokeCap.Round)
-            drawLine(color, Offset(size.width / 2 - head, size.height * 0.08f + head), Offset(size.width / 2, size.height * 0.08f), stroke, StrokeCap.Round)
-            drawLine(color, Offset(size.width / 2 + head, size.height * 0.08f + head), Offset(size.width / 2, size.height * 0.08f), stroke, StrokeCap.Round)
+            val head = 0.26f * size.height
+            drawLine(color, Offset(size.width / 2, size.height * 0.66f), Offset(size.width / 2, size.height * 0.14f), stroke, StrokeCap.Round)
+            drawLine(color, Offset(size.width / 2 - head, size.height * 0.14f + head), Offset(size.width / 2, size.height * 0.14f), stroke, StrokeCap.Round)
+            drawLine(color, Offset(size.width / 2 + head, size.height * 0.14f + head), Offset(size.width / 2, size.height * 0.14f), stroke, StrokeCap.Round)
             drawLine(color, Offset(size.width * 0.14f, size.height * 0.62f), Offset(size.width * 0.14f, size.height * 0.92f), stroke, StrokeCap.Round)
             drawLine(color, Offset(size.width * 0.14f, size.height * 0.92f), Offset(size.width * 0.86f, size.height * 0.92f), stroke, StrokeCap.Round)
             drawLine(color, Offset(size.width * 0.86f, size.height * 0.92f), Offset(size.width * 0.86f, size.height * 0.62f), stroke, StrokeCap.Round)
         }
     )
+}
+
+/**
+ * Places a popover just below its anchor rather than against it: the bar is only 40dp, so a popover
+ * that starts at the anchor's edge covers the bar's hairline and fuses into the chrome.
+ */
+private class BelowAnchorPositionProvider(private val gapPx: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val x = (anchorBounds.right - popupContentSize.width)
+            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+        val below = anchorBounds.bottom + gapPx
+        val y = if (below + popupContentSize.height <= windowSize.height) {
+            below
+        } else {
+            (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        }
+        return IntOffset(x, y)
+    }
 }
 
 private fun pixelSize(canvasSize: Pair<Int, Int>, scale: Int) =
@@ -539,10 +600,9 @@ private fun MeshSwatch(
     points: List<List<Pair<Offset, Long>>>,
     colors: List<SavedColor>,
 ) {
-    val painter = remember(points, colors) {
-        val colorPoints = points.map { row -> row.map { (position, id) -> position to colors.findColor(id) } }
-        meshGradientPainter(colorPoints)
-    }
+    // The points list is the same instance across edits, so key the painter on the colours it resolves to.
+    val colorPoints = points.map { row -> row.map { (position, id) -> position to colors.findColor(id) } }
+    val painter = remember(colorPoints) { meshGradientPainter(colorPoints) }
     val shape = RoundedCornerShape(4.dp)
 
     Box(Modifier.size(16.dp).clip(shape).border(1.dp, Color.White.copy(alpha = 0.12f), shape)) {
@@ -583,7 +643,7 @@ private fun CopyRow(text: String, label: String) {
             .fillMaxWidth()
             .clip(shape)
             .background(JewelTheme.globalColors.panelBackground)
-            .border(1.dp, JewelTheme.globalColors.borders.normal, shape)
+            .border(1.dp, controlBorder(), shape)
             .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
         Text(text, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
