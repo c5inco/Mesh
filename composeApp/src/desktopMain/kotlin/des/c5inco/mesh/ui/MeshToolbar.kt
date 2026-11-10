@@ -294,13 +294,7 @@ private fun SaveFailureWidget(
                     .padding(horizontal = 8.dp, vertical = 4.dp)
                     .testTag(MeshTestTags.SAVE_FAILURE),
             ) {
-                Icon(
-                    key = AllIconsKeys.General.Error,
-                    iconClass = AllIconsKeys::class.java,
-                    contentDescription = null,
-                    tint = error,
-                    modifier = Modifier.size(14.dp),
-                )
+                ErrorMark()
                 Text("Couldn't save", color = error, maxLines = 1)
             }
 
@@ -450,7 +444,8 @@ private fun agentStatusLine(state: McpServerState): String = when (val status = 
     is McpServerState.Status.Failed -> status.message
     is McpServerState.Status.Starting -> "Starting…"
     is McpServerState.Status.Running -> when {
-        state.clients.size >= 2 -> "${state.clients.size} agents are connected: ${state.clients.joinToString(" and ")}"
+        state.clients.size >= 2 ->
+            "${state.clients.size} agents are connected: ${state.clients.distinct().joinToString(" and ")}"
         state.clients.size == 1 -> "${state.clients.single()} is connected"
         else -> "Waiting for an agent to connect"
     }
@@ -545,6 +540,28 @@ private fun ExportWidget(
             Text("Export")
         }
     }
+}
+
+/**
+ * The failure mark: a filled disc with an exclamation. Drawn here for the same reason as [ExportGlyph]
+ * — `AllIconsKeys.General.Error` is a missing icon in the bundled set, and renders as a blank square.
+ */
+@Composable
+private fun ErrorMark(modifier: Modifier = Modifier) {
+    val color = JewelTheme.globalColors.text.error
+    Spacer(
+        modifier.size(14.dp).drawBehind {
+            drawCircle(color)
+            drawLine(
+                Color.White,
+                Offset(size.width / 2, size.height * 0.26f),
+                Offset(size.width / 2, size.height * 0.58f),
+                1.6.dp.toPx(),
+                StrokeCap.Round,
+            )
+            drawCircle(Color.White, radius = 0.9.dp.toPx(), center = Offset(size.width / 2, size.height * 0.75f))
+        }
+    )
 }
 
 /**
@@ -664,10 +681,22 @@ private fun shortcut(key: String, shift: Boolean = false): Set<String> = when {
     else -> setOf("Ctrl", key)
 }
 
+/**
+ * Shows [file] in the file manager. The file can be gone, or the platform can lack the action, so this
+ * reports what happened rather than throwing or doing nothing.
+ */
 private fun reveal(file: File) {
+    val name = if (isMac) "Finder" else "the file manager"
     val desktop = if (java.awt.Desktop.isDesktopSupported()) java.awt.Desktop.getDesktop() else null
-    if (desktop != null && desktop.isSupported(java.awt.Desktop.Action.BROWSE_FILE_DIR)) {
-        desktop.browseFileDirectory(file)
+    when {
+        !file.exists() -> Notifications.send("Couldn't show ${file.name}: it is no longer there")
+        desktop == null || !desktop.isSupported(java.awt.Desktop.Action.BROWSE_FILE_DIR) ->
+            Notifications.send("Couldn't show ${file.name}: this system has no way to open $name")
+        else -> try {
+            desktop.browseFileDirectory(file)
+        } catch (e: Exception) {
+            Notifications.send("Couldn't show ${file.name}: ${e.message}")
+        }
     }
 }
 

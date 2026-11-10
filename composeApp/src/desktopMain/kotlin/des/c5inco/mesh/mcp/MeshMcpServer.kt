@@ -76,11 +76,12 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         }.start(wait = false)
 
     /**
-     * The names of the clients connected right now, as each sent them when it initialized. A client that
-     * has connected but not finished initializing has no name yet, so it is not counted.
+     * One name per connected session, as each client sent it when it initialized. A client that has
+     * connected but not finished initializing has no name yet, so it is not counted. Names repeat when
+     * the same client software holds more than one session, so callers must count entries, not names.
      */
     fun connectedClients(): List<String> =
-        server.sessions.values.mapNotNull { session -> session.clientVersion?.name }.distinct()
+        server.sessions.values.mapNotNull { session -> session.clientVersion?.name }
 
     /** When an agent last called a tool, or 0 if none has since the app started. */
     fun lastToolCallMillis(): Long = lastToolCall.get()

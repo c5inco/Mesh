@@ -232,7 +232,6 @@ class AppConfiguration(
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
                     println("Autosave failed, retrying: ${e.message}")
-                    _saveFailure.value = SaveFailure(e.message ?: "Couldn't save", latestSave?.file ?: document.value.file)
                     delay(AUTOSAVE_DELAY)
                     saveRequests.trySend(Unit)
                 }
@@ -298,7 +297,16 @@ class AppConfiguration(
         while (true) {
             val save = latestSave
             if (save == null || save === lastWrittenSave) return@withLock
-            writeDocument(save.document, save.file)
+            try {
+                writeDocument(save.document, save.file)
+            } catch (e: IOException) {
+                // Scoped to this snapshot and to the document still open, so a failure can neither be
+                // published for a save that has been superseded nor label a document that replaced it.
+                if (save.file == document.value.file) {
+                    _saveFailure.value = SaveFailure(e.message ?: "Couldn't save", save.file)
+                }
+                throw e
+            }
             lastWrittenSave = save
             _saveFailure.value = null
             // The file now holds the document, unless it was edited or replaced since the capture.
