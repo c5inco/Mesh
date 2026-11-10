@@ -48,7 +48,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -62,8 +61,6 @@ import data.MAX_GRID_SIZE
 import data.MIN_GRID_SIZE
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
-import des.c5inco.mesh.data.Notifications
-import des.c5inco.mesh.mcp.McpServerState
 import des.c5inco.mesh.ui.components.ColorDropdown
 import des.c5inco.mesh.ui.components.ColorSwatch
 import des.c5inco.mesh.ui.components.DimensionInputField
@@ -72,7 +69,6 @@ import des.c5inco.mesh.testing.MeshTestTags
 import kotlinx.coroutines.flow.collectLatest
 import mesh.composeapp.generated.resources.Res
 import mesh.composeapp.generated.resources.distributeEvenly_dark
-import mesh.composeapp.generated.resources.featureCodeBlock_dark
 import mesh.composeapp.generated.resources.modeFilled_dark
 import mesh.composeapp.generated.resources.modeFixed_dark
 import model.SavedColor
@@ -86,10 +82,8 @@ import org.jetbrains.jewel.ui.Outline
 import org.jetbrains.jewel.ui.component.CheckboxRow
 import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Divider
-import org.jetbrains.jewel.ui.component.DropdownLink
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconButton
-import org.jetbrains.jewel.ui.component.Link
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.PopupContainer
 import org.jetbrains.jewel.ui.component.Slider
@@ -100,19 +94,10 @@ import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.ui.theme.colorPalette
-import java.awt.Toolkit
-import java.awt.datatransfer.StringSelection
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun SidePanel(
-    documentName: String,
-    documentModified: Boolean,
-    onNewDocument: () -> Unit = {},
-    onOpenDocument: () -> Unit = {},
-    onSaveDocument: () -> Unit = {},
-    onSaveDocumentAs: () -> Unit = {},
-    exportScale: Int,
     presetColors: List<SavedColor> = emptyList(),
     customColors: List<SavedColor> = emptyList(),
     canvasBackgroundColor: Long,
@@ -137,16 +122,10 @@ fun SidePanel(
     onTogglePoints: () -> Unit = {},
     onToggleConstrainingEdgePoints: () -> Unit = {},
     onDistributeMeshPointsEvenly: () -> Unit = {},
-    onExportScaleChange: (Int) -> Unit,
-    onExport: () -> Unit = {},
-    onExportCode: () -> Unit = {},
     onCanvasBackgroundColorChange: (Long) -> Unit = { _ -> },
     onAddColor: (Color) -> Unit = { _ -> },
     onRemoveColor: (SavedColor) -> Unit = { _ -> },
     selectedColorPoint: Pair<Int, Int>? = null,
-    mcpServerState: McpServerState? = null,
-    onMcpServerEnabledChange: (Boolean) -> Unit = {},
-    onMcpServerPortChange: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -166,23 +145,6 @@ fun SidePanel(
     ) {
         // Only the rows on screen are composed, so a large grid costs no more to show than a small one.
         LazyColumn(state = listState) {
-            item(key = "document") {
-                DocumentSection(
-                    name = documentName,
-                    modified = documentModified,
-                    onNew = onNewDocument,
-                    onOpen = onOpenDocument,
-                    onSave = onSaveDocument,
-                    onSaveAs = onSaveDocumentAs,
-                )
-
-                Divider(
-                    orientation = Orientation.Horizontal,
-                    thickness = 1.dp,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
             item(key = "colors") {
                 // The delete confirmation is anchored to a swatch in this item: when the item scrolls away,
                 // close it rather than have it reappear whenever the item scrolls back.
@@ -287,7 +249,6 @@ fun SidePanel(
 
             item(key = "canvas") {
                 CanvasSection(
-                    exportScale = exportScale,
                     backgroundColor = canvasBackgroundColor,
                     canvasWidthMode = canvasWidthMode,
                     canvasWidth = canvasWidth,
@@ -295,28 +256,12 @@ fun SidePanel(
                     canvasHeight = canvasHeight,
                     blurLevel = blurLevel,
                     availableColors = availableColors,
-                    onExportScaleChange = onExportScaleChange,
-                    onExport = onExport,
                     onBackgroundColorChange = { onCanvasBackgroundColorChange(it) },
                     onCanvasWidthModeChange = onCanvasWidthModeChange,
                     onCanvasWidthChange = onCanvasWidthChange,
                     onCanvasHeightModeChange = onCanvasHeightModeChange,
                     onCanvasHeightChange = onCanvasHeightChange,
                     onBlurLevelChange = { onBlurLevelChange(it) }
-                )
-            }
-
-            if (mcpServerState != null) item(key = "mcp") {
-                Divider(
-                    orientation = Orientation.Horizontal,
-                    thickness = 1.dp,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                McpServerSection(
-                    state = mcpServerState,
-                    onEnabledChange = onMcpServerEnabledChange,
-                    onPortChange = onMcpServerPortChange,
                 )
             }
 
@@ -333,21 +278,6 @@ fun SidePanel(
                     SectionHeader(
                         title = "Points",
                         actions = {
-                            Tooltip(tooltip = { Text("Export points as code") }) {
-                                IconButton(
-                                    onClick = {
-                                        onExportCode()
-                                        focusManager.clearFocus()
-                                    },
-                                    modifier = Modifier.testTag(MeshTestTags.EXPORT_CODE),
-                                ) {
-                                    Icon(
-                                        painter = painterResource(resource = Res.drawable.featureCodeBlock_dark),
-                                        contentDescription = "Export points as code"
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(2.dp))
                             Tooltip(tooltip = { Text("Distribute points evenly") }) {
                                 IconButton(
                                     onClick = {
@@ -487,60 +417,6 @@ private fun PointListItem(
 }
 
 @Composable
-private fun McpServerSection(
-    state: McpServerState,
-    onEnabledChange: (Boolean) -> Unit,
-    onPortChange: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.padding(16.dp)) {
-        SectionHeader(title = "MCP server")
-        Spacer(Modifier.height(12.dp))
-        CheckboxRow(
-            text = "Let agents edit this mesh",
-            checked = state.enabled,
-            onCheckedChange = onEnabledChange,
-            modifier = Modifier.testTag(MeshTestTags.MCP_SERVER_ENABLED),
-        )
-        Spacer(Modifier.height(8.dp))
-        DimensionInputField(
-            value = state.port,
-            min = 1024,
-            max = 65535,
-            enabled = true,
-            paramName = "Port",
-            onUpdate = onPortChange,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-        when (val status = state.status) {
-            McpServerState.Status.Off -> StatusText("Off")
-            McpServerState.Status.Starting -> StatusText("Starting…")
-            is McpServerState.Status.Failed -> StatusText(status.message, color = JewelTheme.globalColors.text.error)
-            is McpServerState.Status.Running -> Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusText(status.url, modifier = Modifier.weight(1f))
-                Link(
-                    text = "Copy",
-                    onClick = {
-                        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(status.url), null)
-                        Notifications.send("📋 MCP server URL copied to the clipboard!")
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusText(
-    text: String,
-    color: Color = JewelTheme.globalColors.text.info,
-    modifier: Modifier = Modifier,
-) {
-    Text(text, fontSize = 12.sp, color = color, modifier = modifier.testTag(MeshTestTags.MCP_SERVER_STATUS))
-}
-
-@Composable
 private fun DeleteColorConfirmation(
     color: SavedColor,
     pointsUsingColor: Int,
@@ -608,43 +484,6 @@ private class SwatchPopupPositionProvider(private val gapPx: Int) : PopupPositio
             (anchorBounds.top - gapPx - popupContentSize.height).coerceAtLeast(0)
         }
         return IntOffset(x, y)
-    }
-}
-
-@Composable
-private fun DocumentSection(
-    name: String,
-    modified: Boolean,
-    onNew: () -> Unit,
-    onOpen: () -> Unit,
-    onSave: () -> Unit,
-    onSaveAs: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier.padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = name,
-                style = JewelTheme.typography.h4TextStyle,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .testTag(MeshTestTags.DOCUMENT_NAME),
-            )
-            if (modified) {
-                Spacer(Modifier.width(8.dp))
-                Text("Edited", fontSize = 12.sp, color = JewelTheme.globalColors.text.info)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Link("New", onClick = onNew, modifier = Modifier.testTag(MeshTestTags.NEW_DOCUMENT))
-            Link("Open…", onClick = onOpen)
-            Link("Save", onClick = onSave)
-            Link("Save As…", onClick = onSaveAs)
-        }
     }
 }
 
@@ -841,7 +680,6 @@ private fun ColorPointRow(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CanvasSection(
-    exportScale: Int,
     availableColors: List<SavedColor> = emptyList(),
     backgroundColor: Long,
     canvasWidthMode: DimensionMode,
@@ -849,8 +687,6 @@ private fun CanvasSection(
     canvasHeightMode: DimensionMode,
     canvasHeight: Int,
     blurLevel: Float,
-    onExportScaleChange: (Int) -> Unit,
-    onExport: () -> Unit = {},
     onBackgroundColorChange: (Long) -> Unit = {},
     onCanvasWidthModeChange: () -> Unit = {},
     onCanvasWidthChange: (Int) -> Unit = {},
@@ -930,34 +766,6 @@ private fun CanvasSection(
             )
         }
 
-        Spacer(Modifier.height(8.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End,
-            modifier = Modifier
-                .fillMaxWidth()
-        ) {
-            Link(
-                text = "Export",
-                onClick = onExport
-            )
-            Spacer(Modifier.width(4.dp))
-            DropdownLink(
-                text = "@${exportScale}x",
-            ) {
-                repeat(3) {
-                    selectableItem(
-                        selected = exportScale == it + 1,
-                        onClick = {
-                            onExportScaleChange(it + 1)
-                        },
-                    ) {
-                        Text("${it + 1}x")
-                    }
-                }
-            }
-        }
 
         Spacer(Modifier.height(8.dp))
 

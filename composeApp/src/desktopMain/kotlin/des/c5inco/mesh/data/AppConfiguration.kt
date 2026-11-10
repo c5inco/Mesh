@@ -34,6 +34,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
@@ -199,6 +201,19 @@ class AppConfiguration(
     /** Suspends until the startup document has loaded, so callers never see an empty grid or palette. */
     suspend fun awaitMeshLoaded() = loadStartupDocument.await()
 
+    /** The open document's last write that failed, or null when its file holds every edit. */
+    data class SaveFailure(val message: String, val file: File?)
+
+    private val _saveFailure = MutableStateFlow<SaveFailure?>(null)
+
+    /** The last autosave that failed, for the toolbar to show next to its retry. */
+    val saveFailure: StateFlow<SaveFailure?> = _saveFailure.asStateFlow()
+
+    /** Tries the open document's failed autosave again, rather than waiting for the next edit. */
+    fun retrySave() {
+        saveRequests.trySend(Unit)
+    }
+
     /** The open document and the file to autosave it to, captured together on the UI thread after each edit. */
     private class PendingSave(val document: MeshDocument, val file: File, val generation: Int, val edits: Long)
 
@@ -288,8 +303,19 @@ class AppConfiguration(
         while (true) {
             val save = latestSave
             if (save == null || save === lastWrittenSave) return@withLock
-            writeDocument(save.document, save.file)
+            try {
+                writeDocument(save.document, save.file)
+            } catch (e: IOException) {
+                // Scoped to this snapshot's own document, by generation and path, so a failure can
+                // neither be published for a save that has been superseded nor label a document that
+                // replaced it — including one reopened at the same path.
+                if (save.generation == generation.get() && save.file == document.value.file) {
+                    _saveFailure.value = SaveFailure(e.message ?: "Couldn't save", save.file)
+                }
+                throw e
+            }
             lastWrittenSave = save
+            _saveFailure.value = null
             // The file now holds the document, unless it was edited or replaced since the capture.
             document.update {
                 val current = generation.get() == save.generation && it.file == save.file && edits.get() == save.edits
@@ -401,6 +427,8 @@ class AppConfiguration(
         meshPoints.clear()
         meshPoints.addAll(opened.points)
         history.clear()
+        // A failed save belongs to the document that had it, not to whatever opens next.
+        _saveFailure.value = null
         document.value = DocumentStatus(file, modified)
         if (recordSession) sessions.value = Session(lastDocument = file?.absolutePath)
     }
@@ -488,6 +516,8 @@ class AppConfiguration(
                 }
                 // Another document may have opened while the file was being written.
                 if (generation.get() == save.generation) {
+                    // The file holds the edits now, whether or not autosave ever managed to write them.
+                    _saveFailure.value = null
                     document.value = DocumentStatus(file, modified = edits.get() != save.edits)
                     sessions.value = Session(lastDocument = file.absolutePath)
                     // Edits made during the write belong in the document's new file.

@@ -56,6 +56,8 @@ kotlin {
         }
         desktopMain.dependencies {
             implementation(libs.jewel.int.ui.standalone)
+            // The custom title bar the app's toolbar is drawn into.
+            implementation(libs.jewel.decorated.window)
 
             implementation(compose.desktop.currentOs) {
                 exclude(group = "org.jetbrains.compose.material")
