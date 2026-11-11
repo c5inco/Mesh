@@ -103,7 +103,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     }
 
     private fun createServer() = Server(
-        serverInfo = Implementation(name = "mesh", version = "1.1.0"),
+        serverInfo = Implementation(name = "mesh", version = "1.1.1"),
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
         instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
             "Call get_mesh first to read the grid and the color IDs; a grid of more than $MAX_READ_POINTS points " +
