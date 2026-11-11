@@ -29,6 +29,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.MeshGradientPainter
+import androidx.compose.ui.graphics.PointMode
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
@@ -58,6 +60,9 @@ import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.theme.colorPalette
 import kotlin.math.roundToInt
 
+private const val DEFAULT_SUBDIVISION_STEPS = 10
+private const val MAX_AXIS_SUBDIVISIONS = 100
+
 /**
  * The painter for a grid of points, or null before a complete patch exists (points load
  * asynchronously). Shared by the canvas and the MCP render_png tool so both draw the same gradient.
@@ -75,6 +80,107 @@ fun meshGradientPainter(colorPoints: List<List<Pair<Offset, Color>>>): MeshGradi
             }
         }
     }
+}
+
+/**
+ * Normalized positions of the subdivision grid across the mesh patches, matching the bicubic
+ * Bezier surface geometry and inferred tangents of [MeshGradientPainter]. Shared patch edges and
+ * corners are emitted once so semi-transparent dots don't double-blend along patch seams.
+ */
+internal fun meshSubdivisionPoints(
+    points: List<List<Offset>>,
+    steps: Int = defaultSubdivisionSteps(points),
+): List<Offset> {
+    if (points.size < 2 || points.first().size < 2 || steps < 1) return emptyList()
+    val rows = points.lastIndex
+    val columns = points.first().lastIndex
+    if (points.any { it.size != columns + 1 }) return emptyList()
+
+    val leftBezier = Array(rows + 1) { Array(columns + 1) { Offset.Zero } }
+    val rightBezier = Array(rows + 1) { Array(columns + 1) { Offset.Zero } }
+    val topBezier = Array(rows + 1) { Array(columns + 1) { Offset.Zero } }
+    val bottomBezier = Array(rows + 1) { Array(columns + 1) { Offset.Zero } }
+
+    for (row in 0..rows) {
+        for (column in 0..columns) {
+            val current = points[row][column]
+            val leftNeighbor = if (column > 0) points[row][column - 1] else current
+            val rightNeighbor = if (column < columns) points[row][column + 1] else current
+            val horizontalVector = (rightNeighbor - leftNeighbor).normalized() * 0.33f
+            leftBezier[row][column] = horizontalVector * (leftNeighbor - current).getDistance() * -1f
+            rightBezier[row][column] = horizontalVector * (rightNeighbor - current).getDistance()
+
+            val topNeighbor = if (row > 0) points[row - 1][column] else current
+            val bottomNeighbor = if (row < rows) points[row + 1][column] else current
+            val verticalVector = (bottomNeighbor - topNeighbor).normalized() * 0.33f
+            topBezier[row][column] = verticalVector * (topNeighbor - current).getDistance() * -1f
+            bottomBezier[row][column] = verticalVector * (bottomNeighbor - current).getDistance()
+        }
+    }
+
+    val stepFloats = FloatArray(steps + 1) { it / steps.toFloat() }
+    return buildList((rows * steps + 1) * (columns * steps + 1)) {
+        for (patchRow in 0 until rows) {
+            for (patchColumn in 0 until columns) {
+                val c00 = points[patchRow][patchColumn]
+                val c03 = points[patchRow][patchColumn + 1]
+                val c30 = points[patchRow + 1][patchColumn]
+                val c33 = points[patchRow + 1][patchColumn + 1]
+
+                val c01 = c00 + rightBezier[patchRow][patchColumn]
+                val c02 = c03 + leftBezier[patchRow][patchColumn + 1]
+                val c31 = c30 + rightBezier[patchRow + 1][patchColumn]
+                val c32 = c33 + leftBezier[patchRow + 1][patchColumn + 1]
+
+                val c10 = c00 + bottomBezier[patchRow][patchColumn]
+                val c20 = c30 + topBezier[patchRow + 1][patchColumn]
+                val c13 = c03 + bottomBezier[patchRow][patchColumn + 1]
+                val c23 = c33 + topBezier[patchRow + 1][patchColumn + 1]
+
+                val c11 = c01 + c10 - c00
+                val c12 = c02 + c13 - c03
+                val c21 = c20 + c31 - c30
+                val c22 = c23 + c32 - c33
+
+                val vStart = if (patchRow == 0) 0 else 1
+                val uStart = if (patchColumn == 0) 0 else 1
+                for (uIndex in uStart..steps) {
+                    val u = stepFloats[uIndex]
+                    val r0 = cubicBezier(c00, c01, c02, c03, u)
+                    val r1 = cubicBezier(c10, c11, c12, c13, u)
+                    val r2 = cubicBezier(c20, c21, c22, c23, u)
+                    val r3 = cubicBezier(c30, c31, c32, c33, u)
+                    for (vIndex in vStart..steps) {
+                        add(cubicBezier(r0, r1, r2, r3, stepFloats[vIndex]))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun defaultSubdivisionSteps(points: List<List<Offset>>): Int {
+    if (points.size < 2 || points.first().size < 2) return DEFAULT_SUBDIVISION_STEPS
+    val maxPatchesOnAxis = maxOf(points.lastIndex, points.first().lastIndex)
+    return (MAX_AXIS_SUBDIVISIONS / maxPatchesOnAxis).coerceIn(2, DEFAULT_SUBDIVISION_STEPS)
+}
+
+private fun cubicBezier(p0: Offset, p1: Offset, p2: Offset, p3: Offset, t: Float): Offset {
+    val t2 = t * t
+    val t3 = t2 * t
+    val b0 = -t3 + 3f * t2 - 3f * t + 1f
+    val b1 = 3f * t3 - 6f * t2 + 3f * t
+    val b2 = -3f * t3 + 3f * t2
+    val b3 = t3
+    return Offset(
+        x = b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x,
+        y = b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.y,
+    )
+}
+
+private fun Offset.normalized(): Offset {
+    val distance = getDistance()
+    return if (distance == 0f) Offset.Zero else Offset(x / distance, y / distance)
 }
 
 @Composable
@@ -106,7 +212,11 @@ fun GradientCanvas(
     val colorPoints = meshPoints.map { row ->
         row.map { (position, colorId) -> position to availableColors.findColor(colorId) }
     }
+    val pointPositions = meshPoints.map { row -> row.map { (position, _) -> position } }
     val gradientPainter = remember(colorPoints) { meshGradientPainter(colorPoints) }
+    val subdivisionPoints = remember(pointPositions, showPoints) {
+        if (showPoints) meshSubdivisionPoints(pointPositions) else emptyList()
+    }
     val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
     LaunchedEffect(Unit) {
@@ -233,6 +343,15 @@ fun GradientCanvas(
 
                         // Draw the visible graphics layer on the canvas
                         drawLayer(graphicsLayer)
+                        if (showPoints && subdivisionPoints.isNotEmpty()) {
+                            drawPoints(
+                                points = subdivisionPoints.map { Offset(it.x * size.width, it.y * size.height) },
+                                pointMode = PointMode.Points,
+                                color = Color.White.copy(alpha = 0.9f),
+                                strokeWidth = 3.dp.toPx(),
+                                cap = StrokeCap.Round,
+                            )
+                        }
                     }
                     .graphicsLayer {
                         renderEffect = if (blurRadius > 0f) {
