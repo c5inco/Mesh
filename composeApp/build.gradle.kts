@@ -31,7 +31,7 @@ repositories {
     google()
 }
 
-version = "1.1.0"
+version = "1.1.1"
 val baseName = "Mesh"
 
 val desktopJvmVersion = JavaLanguageVersion.of(25)
