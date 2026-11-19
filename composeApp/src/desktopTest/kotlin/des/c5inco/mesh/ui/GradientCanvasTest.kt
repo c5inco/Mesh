@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import data.DimensionMode
 import kotlinx.coroutines.runBlocking
+import model.PointHandles
 import model.SavedColor
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.intui.standalone.theme.IntUiTheme
@@ -110,6 +111,89 @@ class GradientCanvasTest {
     }
 
     @Test
+    fun `explicit bezier handles shape the subdivision grid exactly as the painter does`() {
+        val points = listOf(
+            listOf(Offset(0.0f, 0.0f), Offset(0.24f, 0.05f), Offset(0.67f, 0.0f), Offset(1.0f, 0.0f)),
+            listOf(Offset(0.02f, 0.62f), Offset(0.33f, 0.33f), Offset(0.64f, 0.54f), Offset(0.98f, 0.41f)),
+            listOf(Offset(0.0f, 1.0f), Offset(0.31f, 0.96f), Offset(0.69f, 1.0f), Offset(1.0f, 1.0f)),
+        )
+        // Handles that differ from the inferred tangents in both direction and length, especially on the
+        // edges between patches, where a left/right or top/bottom mix-up would show.
+        val handles = listOf(
+            listOf(
+                PointHandles(right = Offset(0.12f, 0.18f)),
+                PointHandles(left = Offset(-0.08f, 0.2f), right = Offset(0.15f, -0.06f), bottom = Offset(0.03f, 0.19f)),
+                PointHandles(left = Offset(-0.14f, -0.02f), right = Offset(0.07f, 0.16f)),
+                PointHandles(left = Offset(-0.1f, 0.25f)),
+            ),
+            listOf(
+                PointHandles(top = Offset(0.06f, -0.16f), right = Offset(0.18f, 0.04f), bottom = Offset(-0.02f, 0.12f)),
+                PointHandles(left = Offset(-0.2f, 0.03f), right = Offset(0.13f, 0.1f), top = Offset(-0.04f, -0.14f), bottom = Offset(0.05f, 0.18f)),
+                PointHandles(left = Offset(-0.11f, -0.08f), right = Offset(0.17f, -0.03f), top = Offset(0.07f, -0.2f)),
+                PointHandles(left = Offset(-0.16f, 0.09f), bottom = Offset(-0.05f, 0.15f)),
+            ),
+            listOf(
+                PointHandles(right = Offset(0.1f, -0.15f)),
+                PointHandles(left = Offset(-0.09f, -0.12f), right = Offset(0.12f, 0.06f), top = Offset(-0.03f, -0.18f)),
+                PointHandles(left = Offset(-0.13f, 0.05f), top = Offset(0.08f, -0.16f)),
+                PointHandles(left = Offset(-0.1f, -0.2f)),
+            ),
+        )
+        val painter = requireNotNull(
+            meshGradientPainter(points.map { row -> row.map { it to Color.Magenta } }, handles)
+        )
+
+        val drawSize = Size(225f, 155f)
+        val capturedPatchVertices = mutableListOf<List<Offset>>()
+        val delegateCanvas = Canvas(ImageBitmap(200, 140))
+        val capturingCanvas = object : Canvas by delegateCanvas {
+            override fun drawVertices(vertices: Vertices, blendMode: androidx.compose.ui.graphics.BlendMode, paint: Paint) {
+                val raw = vertices.positions
+                capturedPatchVertices.add(
+                    List(raw.size / 2) { i ->
+                        Offset(raw[i * 2] / drawSize.width, raw[i * 2 + 1] / drawSize.height)
+                    }
+                )
+            }
+        }
+
+        CanvasDrawScope().draw(
+            density = Density(1f),
+            layoutDirection = LayoutDirection.Ltr,
+            canvas = capturingCanvas,
+            size = drawSize,
+        ) {
+            with(painter) { draw(drawSize) }
+        }
+
+        val expectedFromPainter = buildList {
+            for (patchIdx in capturedPatchVertices.indices) {
+                val patchRow = patchIdx / 3
+                val patchCol = patchIdx % 3
+                val patch = capturedPatchVertices[patchIdx]
+                val uStart = if (patchCol == 0) 0 else 1
+                val vStart = if (patchRow == 0) 0 else 1
+                for (uIndex in uStart..10) {
+                    for (vIndex in vStart..10) {
+                        add(patch[uIndex * 11 + vIndex])
+                    }
+                }
+            }
+        }
+
+        val actual = meshSubdivisionPoints(points, handles, steps = 10)
+        assertEquals(expectedFromPainter.size, actual.size)
+        for (i in actual.indices) {
+            val expected = expectedFromPainter[i]
+            val got = actual[i]
+            assertTrue(
+                abs(expected.x - got.x) < 1e-4f && abs(expected.y - got.y) < 1e-4f,
+                "Mismatch at index $i: expected $expected from MeshGradientPainter, got $got",
+            )
+        }
+    }
+
+    @Test
     fun `subdivision points handle incomplete grids and coincident vertices without NaN`() {
         assertTrue(meshSubdivisionPoints(emptyList()).isEmpty())
         assertTrue(meshSubdivisionPoints(listOf(listOf(Offset.Zero, Offset(1f, 0f)))).isEmpty())
@@ -127,14 +211,18 @@ class GradientCanvasTest {
 
     @OptIn(InternalComposeUiApi::class)
     @Test
-    fun `showPoints renders white subdivision dots on canvas without including them in exported layer`() = runBlocking {
+    fun `point and curve overlays are visible only on canvas and not in exported layer`() = runBlocking {
         val gradientColor = SavedColor(uid = 1L, red = 119, green = 102, blue = 238)
         val meshPoints = listOf(
             listOf(Offset(0f, 0f) to 1L, Offset(1f, 0f) to 1L),
             listOf(Offset(0f, 1f) to 1L, Offset(1f, 1f) to 1L),
         )
 
-        suspend fun renderCanvas(showPoints: Boolean): Pair<androidx.compose.ui.graphics.PixelMap, androidx.compose.ui.graphics.PixelMap> {
+        suspend fun renderCanvas(
+            showPoints: Boolean,
+            selectedPoint: Pair<Int, Int>? = null,
+            handles: List<List<PointHandles>> = emptyList(),
+        ): Pair<androidx.compose.ui.graphics.PixelMap, androidx.compose.ui.graphics.PixelMap> {
             lateinit var exportLayer: GraphicsLayer
             val scene = ImageComposeScene(width = 300, height = 300, density = Density(1f))
             try {
@@ -153,7 +241,9 @@ class GradientCanvasTest {
                             canvasHeight = 200,
                             blurLevel = 0.25f,
                             meshPoints = meshPoints,
+                            meshHandles = handles,
                             showPoints = showPoints,
+                            selectedPoint = selectedPoint,
                             canvasBackgroundColor = -1L,
                             availableColors = listOf(gradientColor),
                             onPointDrag = { _, _, _ -> },
@@ -203,5 +293,49 @@ class GradientCanvasTest {
             (exportCenterAfter.green * 255).roundToInt(),
             "Exported layer should not include subdivision dots when showPoints is enabled",
         )
+
+        val handles = listOf(
+            listOf(
+                PointHandles(right = Offset(0.2f, 0.8f), bottom = Offset(0.15f, 0.35f)),
+                PointHandles(left = Offset(-0.4f, 0.4f)),
+            ),
+            listOf(PointHandles(top = Offset(0.6f, -0.2f)), PointHandles()),
+        )
+        val (unselected, _) = renderCanvas(showPoints = true, handles = handles)
+        val (selected, selectedExport) = renderCanvas(showPoints = true, selectedPoint = 0 to 0, handles = handles)
+        val (hidden, _) = renderCanvas(showPoints = false, selectedPoint = 0 to 0, handles = handles)
+
+        // Evaluate both cubics independently, sampling a stretch rather than depending on dash phase.
+        // Both start at (0,0); the other three control points differ on each axis.
+        for ((first, second, end) in listOf(
+            listOf(Offset(0.2f, 0.8f), Offset(0.6f, 0.4f), Offset(1f, 0f)),
+            listOf(Offset(0.15f, 0.35f), Offset(0.6f, 0.8f), Offset(0f, 1f)),
+        )) {
+            var visibleSegments = 0
+            var gaps = 0
+            for (step in 25..65) {
+                val t = step / 100f
+                val u = 1f - t
+                val position = first * (3f * u * u * t) + second * (3f * u * t * t) + end * (t * t * t)
+                val x = (50f + position.x * 200f).roundToInt()
+                val y = (50f + position.y * 200f).roundToInt()
+                fun brightest(pixels: androidx.compose.ui.graphics.PixelMap): Float =
+                    (-1..1).maxOf { dx ->
+                        (-1..1).maxOf { dy ->
+                            val color = pixels[x + dx, y + dy]
+                            minOf(color.red, color.green, color.blue)
+                        }
+                    }
+                // Subdivision dots can lie on the same cubic. Don't count them as curve strokes.
+                if (brightest(unselected) >= 0.75f) continue
+                if (brightest(selected) > 0.85f) visibleSegments++
+                if (brightest(selected) < 0.75f) gaps++
+                assertTrue(brightest(hidden) < 0.75f, "Hiding points should hide their curves too")
+                val exported = selectedExport[x - 50, y - 50]
+                assertTrue(exported.green < 0.55f, "Export must contain only the gradient, not the curve")
+            }
+            assertTrue(visibleSegments >= 4, "The selected point's cubic edge should be visible")
+            assertTrue(gaps >= 4, "The cubic edge should be dashed, not solid")
+        }
     }
 }

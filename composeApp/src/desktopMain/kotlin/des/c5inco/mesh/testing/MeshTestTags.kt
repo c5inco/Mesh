@@ -23,8 +23,19 @@ object MeshTestTags {
     const val EXPORT_SCALE_MENU = "mesh.export-scale-menu"
 
     const val POINT_COLOR_PREFIX = "mesh.point-color-"
+    const val HANDLE_FIELD_PREFIX = "mesh.handle-field-"
+    const val HANDLES_POPUP = "mesh.handles-popup"
+    const val HANDLES_POPUP_SCRIM = "mesh.handles-popup-scrim"
+    const val HANDLES_POPUP_CLOSE = "mesh.handles-popup-close"
+    const val HANDLES_RESET_ALL = "mesh.handles-reset-all"
 
     fun pointColor(row: Int, col: Int): String = "$POINT_COLOR_PREFIX$row-$col"
+
+    fun bezierHandle(row: Int, col: Int, side: String): String = "mesh.bezier-handle-$row-$col-$side"
+
+    fun handleField(row: Int, col: Int, side: String, axis: String): String = "$HANDLE_FIELD_PREFIX$row-$col-$side-$axis"
+
+    fun handleMirroring(row: Int, col: Int, pair: String): String = "mesh.handle-mirroring-$row-$col-$pair"
 
     fun customColor(hex: String): String = "mesh.custom-color-$hex"
 }

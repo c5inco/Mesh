@@ -1,6 +1,7 @@
 package des.c5inco.mesh.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
@@ -44,8 +46,12 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalDensity
@@ -61,11 +67,11 @@ import data.MAX_GRID_SIZE
 import data.MIN_GRID_SIZE
 import des.c5inco.mesh.common.toColor
 import des.c5inco.mesh.common.toHexStringNoHash
+import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.ui.components.ColorDropdown
 import des.c5inco.mesh.ui.components.ColorSwatch
 import des.c5inco.mesh.ui.components.DimensionInputField
 import des.c5inco.mesh.ui.components.OffsetInputField
-import des.c5inco.mesh.testing.MeshTestTags
 import kotlinx.coroutines.flow.collectLatest
 import mesh.composeapp.generated.resources.Res
 import mesh.composeapp.generated.resources.distributeEvenly_dark
@@ -94,6 +100,7 @@ import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import org.jetbrains.jewel.ui.icons.AllIconsKeys
 import org.jetbrains.jewel.ui.typography
 import org.jetbrains.jewel.ui.theme.colorPalette
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -125,7 +132,9 @@ fun SidePanel(
     onCanvasBackgroundColorChange: (Long) -> Unit = { _ -> },
     onAddColor: (Color) -> Unit = { _ -> },
     onRemoveColor: (SavedColor) -> Unit = { _ -> },
-    selectedColorPoint: Pair<Int, Int>? = null,
+    selectedPoint: Pair<Int, Int>? = null,
+    handlesPopupPoint: Pair<Int, Int>? = null,
+    onToggleHandles: (row: Int, col: Int, anchor: IntOffset) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -135,6 +144,16 @@ fun SidePanel(
     // One list for every point row, so rows whose point didn't change can skip recomposing.
     val availableColors = remember(presetColors, customColors) { presetColors + customColors }
     val listState = rememberLazyListState()
+
+    // A point picked on the canvas brings its row into view, unless it is already visible.
+    LaunchedEffect(selectedPoint) {
+        val (row, col) = selectedPoint ?: return@LaunchedEffect
+        if (meshPoints.isEmpty() || row !in meshPoints.indices || col !in meshPoints[row].indices) return@LaunchedEffect
+        val index = 4 + row * (meshPoints[0].size + 1) + col
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == index }) {
+            listState.animateScrollToItem(index)
+        }
+    }
 
     VerticallyScrollableContainer(
         scrollState = listState,
@@ -331,6 +350,12 @@ fun SidePanel(
                         checked = constrainEdgePoints,
                         onCheckedChange = { onToggleConstrainingEdgePoints() },
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Use a point's four-dot button to edit its control points. Selecting a point on the canvas shows them there too.",
+                        fontSize = 11.sp,
+                        color = JewelTheme.globalColors.text.info,
+                    )
                 }
             }
 
@@ -355,7 +380,9 @@ fun SidePanel(
                         constrainX = constrainEdgePoints && (colIdx == 0 || lastInRow),
                         constrainY = constrainEdgePoints && (rowIdx == 0 || rowIdx == meshPoints.lastIndex),
                         availableColors = availableColors,
-                        selected = selectedColorPoint == Pair(rowIdx, colIdx),
+                        selected = selectedPoint == Pair(rowIdx, colIdx),
+                        handlesOpen = handlesPopupPoint == Pair(rowIdx, colIdx),
+                        onToggleHandles = { anchor -> onToggleHandles(rowIdx, colIdx, anchor) },
                         onUpdateMeshPoint = onUpdateMeshPoint,
                         modifier = Modifier.padding(
                             start = 16.dp,
@@ -373,7 +400,8 @@ fun SidePanel(
     }
 }
 
-/** One point's editor in the list: its color and position, with a bar when it's selected on the canvas. */
+/** One point's editor in the list: its color and position, with a button for its Bezier handles. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PointListItem(
     row: Int,
@@ -383,35 +411,77 @@ private fun PointListItem(
     constrainY: Boolean,
     availableColors: List<SavedColor>,
     selected: Boolean,
+    handlesOpen: Boolean,
+    onToggleHandles: (anchor: IntOffset) -> Unit,
     onUpdateMeshPoint: (row: Int, col: Int, point: Pair<Offset, Long>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        contentAlignment = Alignment.CenterStart,
-        modifier = modifier,
-    ) {
-        ColorPointRow(
-            x = point.first.x,
-            y = point.first.y,
-            constrainX = constrainX,
-            constrainY = constrainY,
-            colorId = point.second,
-            availableColors = availableColors,
-            colorDropdownTestTag = MeshTestTags.pointColor(row, col),
-            onUpdatePoint = { onUpdateMeshPoint(row, col, it) },
-            modifier = Modifier.fillMaxWidth()
-        )
+    var toggleTopLeft by remember { mutableStateOf(IntOffset.Zero) }
+    val info = JewelTheme.globalColors.text.info
 
-        if (selected) {
-            val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
-                ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
-            Spacer(
-                Modifier
-                    .offset(x = -16.dp)
-                    .background(selectedPointColor)
-                    .width(4.dp)
-                    .height(24.dp)
-            )
+    Box(modifier) {
+        Box(contentAlignment = Alignment.CenterStart) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                ColorPointRow(
+                    x = point.first.x,
+                    y = point.first.y,
+                    constrainX = constrainX,
+                    constrainY = constrainY,
+                    colorId = point.second,
+                    availableColors = availableColors,
+                    colorDropdownTestTag = MeshTestTags.pointColor(row, col),
+                    onUpdatePoint = { onUpdateMeshPoint(row, col, it) },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(
+                            if (handlesOpen) info.copy(alpha = 0.15f) else Color.Transparent,
+                            RoundedCornerShape(4.dp),
+                        )
+                        .onGloballyPositioned { coordinates ->
+                            val topLeft = coordinates.localToWindow(Offset.Zero)
+                            toggleTopLeft = IntOffset(
+                                topLeft.x.roundToInt(),
+                                topLeft.y.roundToInt(),
+                            )
+                        }
+                        .clickable(role = Role.Button) { onToggleHandles(toggleTopLeft) }
+                        .semantics {
+                            contentDescription = if (handlesOpen) {
+                                "Hide control points for row ${row + 1}, col ${col + 1}"
+                            } else {
+                                "Show control points for row ${row + 1}, col ${col + 1}"
+                            }
+                        },
+                ) {
+                    Canvas(Modifier.size(14.dp)) {
+                        val radius = 1.5.dp.toPx()
+                        drawCircle(info, radius, Offset(center.x, radius))
+                        drawCircle(info, radius, Offset(radius, center.y))
+                        drawCircle(info, radius, Offset(size.width - radius, center.y))
+                        drawCircle(info, radius, Offset(center.x, size.height - radius))
+                    }
+                }
+            }
+
+            if (selected) {
+                val selectedPointColor = JewelTheme.colorPalette.blueOrNull(6)
+                    ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
+                Spacer(
+                    Modifier
+                        .offset(x = -16.dp)
+                        .background(selectedPointColor)
+                        .width(4.dp)
+                        .height(24.dp)
+                )
+            }
         }
     }
 }

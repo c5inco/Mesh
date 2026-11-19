@@ -16,6 +16,8 @@ fun PointCursor(
     xIndex: Int,
     yIndex: Int,
     color: Color,
+    selected: Boolean = false,
+    selectedColor: Color = Color.White,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -24,6 +26,13 @@ fun PointCursor(
             .size(20.dp)
             .drawWithContent {
                 drawContent()
+                if (selected) {
+                    drawCircle(
+                        color = selectedColor,
+                        radius = 13.dp.toPx(),
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                }
                 drawCircle(
                     color = color
                 )

@@ -413,6 +413,105 @@ class MeshGuiTest {
         }
     }
 
+    @Test
+    @Order(15)
+    fun `a point row toggle opens the handles popup to edit and reset handles`(): Unit = runBlocking {
+        with(fixture.automator) {
+            waitForTestTag(MeshTestTags.APP)
+            waitForVisualIdle()
+
+            val toggle = waitForSidePanelNode("the first point's handles toggle") {
+                findByContentDescription("Show control points for row 1, col 1").firstOrNull()
+            }
+            performSemanticsClick(toggle)
+            waitForTestTag(MeshTestTags.HANDLES_POPUP)
+            waitForText("Control points")
+            assertNull(findOneByTestTag(MeshTestTags.HANDLES_RESET_ALL), "Automatic handles need no reset")
+            assertEquals(1, findByContentDescription("Left/right: No mirroring").size)
+            assertEquals(1, findByContentDescription("Top/bottom: No mirroring").size)
+
+            val field = waitForTestTag(MeshTestTags.handleField(0, 0, "right", "x"))
+            clearAndTypeText(field, "0.2")
+            pressEnter()
+            eventually(description = "the right handle to be set") {
+                fixture.configuration.meshHandles[0][0].right?.x?.takeIf { it == 0.2f }
+            }
+            assertNull(fixture.configuration.meshHandles[0][0].left, "The default mode is independent")
+
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "left", "x")), "-0.1")
+            pressEnter()
+            performSemanticsClick(waitForTestTag(MeshTestTags.handleMirroring(0, 0, "horizontal")))
+            eventually(description = "the horizontal pair to show angle mirroring") {
+                findByContentDescription("Left/right: Mirror angle").singleOrNull()
+            }
+            assertEquals(1, findByContentDescription("Top/bottom: No mirroring").size)
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "right", "y")), "0.15")
+            pressEnter()
+            eventually(description = "the opposite handle angle to follow") {
+                fixture.configuration.meshHandles[0][0].left?.takeIf { it.y < 0f && it.x < 0f }
+            }
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.handleMirroring(0, 0, "horizontal")))
+            eventually(description = "the icon to show angle and length mirroring") {
+                findByContentDescription("Left/right: Mirror angle and length").singleOrNull()
+            }
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "right", "x")), "0.3")
+            pressEnter()
+            eventually(description = "the opposite field to mirror angle and length") {
+                findOneByTestTag(MeshTestTags.handleField(0, 0, "left", "x"))
+                    ?.editableText?.takeIf { it == "-0.3" }
+            }
+            assertEquals(-0.15f, fixture.configuration.meshHandles[0][0].left?.y)
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.handleMirroring(0, 0, "horizontal")))
+            eventually(description = "the icon to cycle back to independent handles") {
+                findByContentDescription("Left/right: No mirroring").singleOrNull()
+            }
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "right", "x")), "0.4")
+            pressEnter()
+            eventually(description = "only the selected handle to change") {
+                fixture.configuration.meshHandles[0][0].takeIf { it.right?.x == 0.4f && it.left?.x == -0.3f }
+            }
+
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "top", "x")), "-0.1")
+            pressEnter()
+            performSemanticsClick(waitForTestTag(MeshTestTags.handleMirroring(0, 0, "vertical")))
+            performSemanticsClick(waitForTestTag(MeshTestTags.handleMirroring(0, 0, "vertical")))
+            eventually(description = "the vertical pair alone to mirror angle and length") {
+                findByContentDescription("Top/bottom: Mirror angle and length").singleOrNull()
+            }
+            assertEquals(1, findByContentDescription("Left/right: No mirroring").size)
+            clearAndTypeText(waitForTestTag(MeshTestTags.handleField(0, 0, "bottom", "x")), "0.25")
+            pressEnter()
+            eventually(description = "the top handle to mirror the bottom handle") {
+                fixture.configuration.meshHandles[0][0].top?.takeIf { it.x == -0.25f }
+            }
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.HANDLES_RESET_ALL))
+            eventually(description = "all handles to reset and the reset link to disappear") {
+                if (fixture.configuration.meshHandles[0][0].isAutomatic &&
+                    findOneByTestTag(MeshTestTags.HANDLES_RESET_ALL) == null
+                ) Unit else null
+            }
+
+            performSemanticsClick(waitForTestTag(MeshTestTags.HANDLES_POPUP_CLOSE))
+            eventually(description = "the handles popup to close") {
+                if (findOneByTestTag(MeshTestTags.HANDLES_POPUP) == null) Unit else null
+            }
+
+            withContext(Dispatchers.Main) {
+                fixture.configuration.undo()
+                assertEquals(0.4f, fixture.configuration.meshHandles[0][0].right?.x)
+                while (!fixture.configuration.meshHandles[0][0].isAutomatic && fixture.configuration.canUndo.value) {
+                    fixture.configuration.undo()
+                }
+            }
+            eventually(description = "the handle edit to be undone") {
+                if (fixture.configuration.meshHandles[0][0].isAutomatic) Unit else null
+            }
+        }
+    }
+
     private suspend fun ComposeAutomator.closeCustomColorEditor() {
         val input = runCatching {
             waitForSidePanelNode("an open custom color editor", timeout = 1.seconds) {

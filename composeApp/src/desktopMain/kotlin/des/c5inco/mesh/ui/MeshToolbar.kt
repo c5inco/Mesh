@@ -50,6 +50,7 @@ import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.ui.components.DimensionInputField
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import model.PointHandles
 import model.SavedColor
 import model.findColor
 import org.jetbrains.jewel.foundation.theme.JewelTheme
@@ -117,6 +118,7 @@ fun DecoratedWindowScope.MeshToolbar(
     documentFile: File?,
     saveFailure: AppConfiguration.SaveFailure?,
     meshPoints: List<List<Pair<Offset, Long>>>,
+    meshHandles: List<List<PointHandles>>,
     availableColors: List<SavedColor>,
     exportScale: Int,
     canvasSize: Pair<Int, Int>,
@@ -143,6 +145,7 @@ fun DecoratedWindowScope.MeshToolbar(
                 untitled = documentUntitled,
                 file = documentFile,
                 points = meshPoints,
+                handles = meshHandles,
                 colors = availableColors,
                 saveFailed = saveFailure != null,
                 onNew = onNewDocument,
@@ -191,6 +194,7 @@ private fun DocumentWidget(
     untitled: Boolean,
     file: File?,
     points: List<List<Pair<Offset, Long>>>,
+    handles: List<List<PointHandles>>,
     colors: List<SavedColor>,
     saveFailed: Boolean,
     onNew: () -> Unit,
@@ -212,7 +216,7 @@ private fun DocumentWidget(
                 .testTag(MeshTestTags.DOCUMENT),
         ) {
             Box {
-                MeshSwatch(points = points, colors = colors)
+                MeshSwatch(points = points, handles = handles, colors = colors)
                 if (saveFailed) {
                     Spacer(
                         Modifier
@@ -634,15 +638,17 @@ private class BelowAnchorPositionProvider(private val gapPx: Int) : PopupPositio
 private fun pixelSize(canvasSize: Pair<Int, Int>, scale: Int) =
     "${canvasSize.first * scale} × ${canvasSize.second * scale}"
 
-/** The document's gradient, drawn into 16dp: the same mesh the canvas shows. */
+/** The document's gradient, drawn into 16dp: the same mesh the canvas shows, handles included. */
 @Composable
 private fun MeshSwatch(
     points: List<List<Pair<Offset, Long>>>,
+    handles: List<List<PointHandles>>,
     colors: List<SavedColor>,
 ) {
     // The points list is the same instance across edits, so key the painter on the colours it resolves to.
     val colorPoints = points.map { row -> row.map { (position, id) -> position to colors.findColor(id) } }
-    val painter = remember(colorPoints) { meshGradientPainter(colorPoints) }
+    val handlesSnapshot = handles.toList()
+    val painter = remember(colorPoints, handlesSnapshot) { meshGradientPainter(colorPoints, handlesSnapshot) }
     val shape = RoundedCornerShape(4.dp)
 
     Box(Modifier.size(16.dp).clip(shape).border(1.dp, Color.White.copy(alpha = 0.12f), shape)) {

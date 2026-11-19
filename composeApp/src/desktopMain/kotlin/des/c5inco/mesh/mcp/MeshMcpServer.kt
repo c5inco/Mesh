@@ -35,10 +35,12 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -46,8 +48,14 @@ import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import model.HandleSide
+import model.HandleMirroring
+import model.PointHandles
+import model.PointMirroring
 import model.SavedColor
+import model.effectiveHandle
 import model.findColor
+import model.handlesAt
 import model.withUpdatedMeshPoint
 import org.jetbrains.skia.EncodedImageFormat
 import java.util.concurrent.atomic.AtomicLong
@@ -105,10 +113,11 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
     private fun createServer() = Server(
         serverInfo = Implementation(name = "mesh", version = "1.1.1"),
         options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
-        instructions = "Mesh edits a mesh gradient: a grid of points, each with a position and a color. " +
-            "Call get_mesh first to read the grid and the color IDs; a grid of more than $MAX_READ_POINTS points " +
-            "comes back without its points unless you pass rowStart, rowEnd, colStart, and colEnd, which must select " +
-            "a region of at most $MAX_READ_POINTS points and is rejected otherwise. " +
+        instructions = "Mesh edits a mesh gradient: a grid of points, each with a position, a color, and four " +
+            "Bezier handles (left, top, right, bottom) that bend the edges leaving it. " +
+            "Call get_mesh first to read the grid, the color IDs, and the handles; a grid of more than " +
+            "$MAX_READ_POINTS points comes back without its points unless you pass rowStart, rowEnd, colStart, " +
+            "and colEnd, which must select a region of at most $MAX_READ_POINTS points and is rejected otherwise. " +
             "Then edit with set_grid, update_point (or update_points for many at once), and add_color, " +
             "and check the result with render_png. Use undo to take back an edit.",
     ) {
@@ -116,11 +125,14 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             name = "get_mesh",
             description = "Returns the open document's mesh as JSON: the document's name and file, grid size, " +
                 "canvas settings, the preset and custom colors with their IDs, and the points' row, column, " +
-                "position, and color ID. Positions are fractions of the canvas from 0 to 1, with (0, 0) at the top " +
-                "left. Returns at most $MAX_READ_POINTS points per call: pass rowStart, rowEnd, colStart, and " +
-                "colEnd to read a region of a larger grid, which otherwise comes back without its points. A region " +
-                "over $MAX_READ_POINTS points is rejected, and so is a field other than those four. " +
-                "Color IDs belong to the open document and change when another document opens.",
+                "position, color ID, four Bezier handles, and horizontal/vertical mirroring modes. " +
+                "Positions are fractions of the canvas from 0 to 1, " +
+                "with (0, 0) at the top left. Each handle holds x and y offsets from its point, plus auto: true when " +
+                "the mesh infers it from the neighboring points. Returns at most $MAX_READ_POINTS points per call: " +
+                "pass rowStart, rowEnd, colStart, and colEnd to read a region of a larger grid, which otherwise " +
+                "comes back without its points. A region over $MAX_READ_POINTS points is rejected, and so is a " +
+                "field other than those four. Color IDs belong to the open document and change when another " +
+                "document opens.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putRangeProperty("rowStart", "First row to return, inclusive. Must be a row of the current grid; omitted defaults to its first row.")
@@ -133,9 +145,13 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
         addTrackedTool(
             name = "update_point",
-            description = "Moves and/or recolors the point at a row and column. Omitted fields keep their " +
-                "current value; fields other than row, col, x, y, and colorId are rejected. When edge constraints " +
-                "are on (the default), edge points stay on their edge.",
+            description = "Moves, recolors, and/or reshapes the point at a row and column. Omitted fields keep " +
+                "their current value; fields other than row, col, x, y, colorId, handles, and mirroring are rejected. When " +
+                "edge constraints are on (the default), edge points stay on their edge. handles sets any of the " +
+                "point's four Bezier handles, each as an {x, y} offset from the point in canvas fractions; omit " +
+                "a handle to keep it and pass null to return it to automatic. mirroring sets the saved horizontal " +
+                "and vertical coupling modes for subsequent UI edits. MCP coordinates are explicit: only the " +
+                "handles supplied change, regardless of mirroring. Position, color, handles, and modes change as one undo step.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("row") { put("type", "integer"); put("description", "Row index, from 0") }
@@ -143,6 +159,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                     putJsonObject("x") { put("type", "number"); put("description", "Horizontal position, 0 to 1") }
                     putJsonObject("y") { put("type", "number"); put("description", "Vertical position, 0 to 1") }
                     putJsonObject("colorId") { put("type", "integer"); put("description", "A color ID from get_mesh") }
+                    putHandlesSchema()
+                    putMirroringSchema()
                 },
                 required = listOf("row", "col"),
             ),
@@ -150,16 +168,16 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
         addTrackedTool(
             name = "update_points",
-            description = "Moves and/or recolors many points as a single undoable edit, like update_point for each " +
-                "entry in order, and returns where each edited point ended up. Takes 1 to $MAX_BATCH_POINTS entries. " +
-                "If any entry is invalid, no point changes.",
+            description = "Moves, recolors, and/or reshapes many points as a single undoable edit, like update_point " +
+                "for each entry in order, and returns where each edited point ended up. Takes 1 to " +
+                "$MAX_BATCH_POINTS entries. If any entry is invalid, no point changes.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("points") {
                         put("type", "array")
                         put("minItems", 1)
                         put("maxItems", MAX_BATCH_POINTS)
-                        put("description", "Point edits, each {row, col, x?, y?, colorId?} as in update_point")
+                        put("description", "Point edits, each {row, col, x?, y?, colorId?, handles?, mirroring?} as in update_point")
                         putJsonObject("items") {
                             put("type", "object")
                             putJsonObject("properties") {
@@ -168,6 +186,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                                 putJsonObject("x") { put("type", "number") }
                                 putJsonObject("y") { put("type", "number") }
                                 putJsonObject("colorId") { put("type", "integer") }
+                                putHandlesSchema()
+                                putMirroringSchema()
                             }
                             put("required", buildJsonArray { add(JsonPrimitive("row")); add(JsonPrimitive("col")) })
                             put("additionalProperties", false)
@@ -196,7 +216,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             name = "set_grid",
             description = "Changes the grid size and/or blur as one undoable edit; pass at least one. Omitted fields " +
                 "keep their current value. Changing " +
-                "rows or columns replaces every point with an evenly spaced grid, so call get_mesh again afterwards.",
+                "rows or columns replaces every point with an evenly spaced grid whose handles are automatic, " +
+                "so call get_mesh again afterwards.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("rows") {
@@ -263,6 +284,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             val meshState = configuration.meshState.value
             val document = configuration.document.value
             val points = configuration.meshPoints
+            val handles = configuration.meshHandles
+            val pointPositions = points.map { row -> row.map { it.first } }
             val grid = "${meshState.rows} rows and ${meshState.cols} columns"
             val firstRow = range.rowStart ?: 0
             val lastRow = range.rowEnd ?: meshState.rows - 1
@@ -323,6 +346,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                                     put("x", offset.x)
                                     put("y", offset.y)
                                     put("colorId", colorId)
+                                    put("handles", handlesJson(pointPositions, handles, row, col))
+                                    put("mirroring", mirroringJson(handles.handlesAt(row, col).mirroring))
                                 })
                             }
                         }
@@ -341,14 +366,25 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
 
     private fun updatePoint(request: CallToolRequest, paletteIds: Set<Long>): CallToolResult {
         val edit = try {
-            parsePointEdit(request.arguments ?: JsonObject(emptyMap()), configuration.meshPoints, paletteIds)
+            parsePointEdit(
+                request.arguments ?: JsonObject(emptyMap()),
+                configuration.meshPoints,
+                configuration.meshHandles,
+                paletteIds,
+            )
         } catch (e: InvalidArgument) {
             return error(e.message)
         }
-        configuration.updateMeshPoint(edit.row, edit.col, edit.point)
+        configuration.updateMeshPoint(edit.row, edit.col, edit.point, edit.handles)
         val (offset, newColorId) = configuration.meshPoints[edit.row][edit.col]
+        val handles = configuration.meshHandles.handlesAt(edit.row, edit.col)
         return CallToolResult(
-            content = listOf(TextContent("Point (${edit.row}, ${edit.col}) is now at x=${offset.x}, y=${offset.y} with color $newColorId"))
+            content = listOf(
+                TextContent(
+                    "Point (${edit.row}, ${edit.col}) is now at x=${offset.x}, y=${offset.y} with color $newColorId; " +
+                        "handles: ${handles.describe()}; mirroring: ${mirroringJson(handles.mirroring)}"
+                )
+            )
         )
     }
 
@@ -360,8 +396,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             return@withContext error(e.message)
         }
         val entries = (request.arguments?.get("points") as? JsonArray)
-            ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?}")
-        if (entries.isEmpty()) return@withContext error("points is empty; pass at least one {row, col, x?, y?, colorId?}")
+            ?: return@withContext error("points is required: an array of {row, col, x?, y?, colorId?, handles?, mirroring?}")
+        if (entries.isEmpty()) return@withContext error("points is empty; pass at least one {row, col, x?, y?, colorId?, handles?, mirroring?}")
         if (entries.size > MAX_BATCH_POINTS) {
             return@withContext error("points has ${entries.size} entries; the limit is $MAX_BATCH_POINTS, one per point of the largest grid")
         }
@@ -370,18 +406,25 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         // Each entry is read against the points as the entries before it leave them, as separate update_point
         // calls would be; updateMeshPoints then replays the same edits onto the mesh as one undo step.
         var points: List<List<Pair<Offset, Long>>> = configuration.meshPoints.toList()
+        var handles: List<List<PointHandles>> = configuration.meshHandles.toList()
         val edits = entries.mapIndexed { index, entry ->
             val args = entry as? JsonObject ?: return@withContext error("points[$index] must be an object")
             val edit = try {
-                parsePointEdit(args, points, paletteIds)
+                parsePointEdit(args, points, handles, paletteIds)
             } catch (e: InvalidArgument) {
                 return@withContext error("points[$index]: ${e.message}")
             }
             points = points.withUpdatedMeshPoint(edit.row, edit.col, edit.point, constrainEdges)
+            edit.handles?.let { updated ->
+                handles = handles.mapIndexed { r, rowHandles ->
+                    if (r == edit.row) rowHandles.toMutableList().also { it[edit.col] = updated } else rowHandles
+                }
+            }
             edit
         }
         val changed = configuration.updateMeshPoints(edits)
         // Read back from the mesh, so the caller sees where edge constraints kept a point.
+        val pointPositions = configuration.meshPoints.map { row -> row.map { it.first } }
         val edited = buildJsonArray {
             edits.map { it.row to it.col }.distinct().forEach { (row, col) ->
                 val (offset, colorId) = configuration.meshPoints[row][col]
@@ -391,6 +434,8 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
                     put("x", offset.x)
                     put("y", offset.y)
                     put("colorId", colorId)
+                    put("handles", handlesJson(pointPositions, configuration.meshHandles, row, col))
+                    put("mirroring", mirroringJson(configuration.meshHandles.handlesAt(row, col).mirroring))
                 })
             }
         }
@@ -402,8 +447,16 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         CallToolResult(content = listOf(TextContent("$summary. The edited points are now: $edited")))
     }
 
-    /** Reads the edit that [args] describe, checking it against [points] and [paletteIds], or throws [InvalidArgument]. */
-    private fun parsePointEdit(args: JsonObject, points: List<List<Pair<Offset, Long>>>, paletteIds: Set<Long>): MeshPointEdit {
+    /**
+     * Reads the edit that [args] describe, checking it against [points], [handles], and [paletteIds], or
+     * throws [InvalidArgument].
+     */
+    private fun parsePointEdit(
+        args: JsonObject,
+        points: List<List<Pair<Offset, Long>>>,
+        handles: List<List<PointHandles>>,
+        paletteIds: Set<Long>,
+    ): MeshPointEdit {
         args.requireOnly(POINT_EDIT_FIELDS, "a point edit")
         val row = args.optionalInt("row") ?: throw InvalidArgument("row is required")
         val col = args.optionalInt("col") ?: throw InvalidArgument("col is required")
@@ -423,9 +476,157 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         if (requestedX.isOutOfRange(current.x) || requestedY.isOutOfRange(current.y)) {
             throw InvalidArgument("x and y must be between 0 and 1")
         }
+        val currentHandles = handles.handlesAt(row, col)
+        val requestedHandles = args.optionalHandles(currentHandles)
+        val requestedMirroring = args.optionalMirroring(currentHandles.mirroring)
+        val updatedHandles = requestedMirroring?.let { (requestedHandles ?: currentHandles).copy(mirroring = it) }
+            ?: requestedHandles
         val x = requestedX ?: current.x
         val y = requestedY ?: current.y
-        return MeshPointEdit(row, col, Offset(x, y) to (requestedColorId ?: currentColorId))
+        return MeshPointEdit(row, col, Offset(x, y) to (requestedColorId ?: currentColorId), updatedHandles)
+    }
+
+    /** Omitted axes keep their modes; null resets both to independent without changing handle positions. */
+    private fun JsonObject.optionalMirroring(current: PointMirroring): PointMirroring? {
+        if (!containsKey("mirroring")) return null
+        val value = get("mirroring")
+        if (value is JsonNull) return PointMirroring()
+        val requested = value as? JsonObject
+            ?: throw InvalidArgument("mirroring must be an object of horizontal and vertical, or null")
+        requested.requireOnly(setOf("horizontal", "vertical"), "mirroring")
+        fun mode(axis: String, previous: HandleMirroring): HandleMirroring {
+            if (!requested.containsKey(axis)) return previous
+            val name = (requested[axis] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            return HandleMirroring.entries.firstOrNull { it.name == name }
+                ?: throw InvalidArgument("mirroring.$axis must be NONE, ANGLE, or ANGLE_AND_LENGTH")
+        }
+        return PointMirroring(mode("horizontal", current.horizontal), mode("vertical", current.vertical))
+    }
+
+    /**
+     * The handles an edit asks for, or null when it doesn't mention them. A null handles object resets all
+     * four, and a null handle resets that one; an omitted handle keeps its current value.
+     */
+    private fun JsonObject.optionalHandles(current: PointHandles): PointHandles? {
+        if (!containsKey("handles")) return null
+        val value = get("handles")
+        if (value is JsonNull) return PointHandles(mirroring = current.mirroring)
+        val requested = value as? JsonObject
+            ?: throw InvalidArgument("handles must be an object of left, top, right, and bottom, or null")
+        requested.requireOnly(HANDLE_FIELDS.keys, "handles")
+        var result = current
+        requested.forEach { (name, element) ->
+            val side = HANDLE_FIELDS.getValue(name)
+            val offset = if (element is JsonNull) null else parseControlPoint(element, "handles.$name")
+            result = result.with(side, offset)
+        }
+        return result
+    }
+
+    /** Reads one `{x, y}` control point offset, or null when it is automatic, naming [path] in errors. */
+    private fun parseControlPoint(element: JsonElement, path: String): Offset? {
+        val point = element as? JsonObject
+            ?: throw InvalidArgument("$path must be an object with x and y, or null to return it to automatic")
+        point.requireOnly(setOf("x", "y", "auto"), path)
+        val auto = point["auto"]?.takeUnless { it is JsonNull }?.let { value ->
+            val primitive = value as? JsonPrimitive
+            if (primitive == null || primitive.isString) throw InvalidArgument("$path.auto must be true or false")
+            primitive.booleanOrNull ?: throw InvalidArgument("$path.auto must be true or false")
+        } ?: false
+        if (auto) return null
+        val x = point.optionalFloat("x") ?: throw InvalidArgument("$path.x is required unless auto is true")
+        val y = point.optionalFloat("y") ?: throw InvalidArgument("$path.y is required unless auto is true")
+        if (!x.isFinite() || !y.isFinite()) throw InvalidArgument("$path.x and $path.y must be finite")
+        return Offset(x, y)
+    }
+
+    /** Each point's four handles, with the effective offset and whether the mesh infers it. */
+    private fun handlesJson(
+        points: List<List<Offset>>,
+        handles: List<List<PointHandles>>,
+        row: Int,
+        col: Int,
+    ): JsonObject {
+        val explicit = handles.handlesAt(row, col)
+        fun handle(side: HandleSide) = buildJsonObject {
+            val offset = points.effectiveHandle(row, col, side, explicit)
+            put("x", offset.x)
+            put("y", offset.y)
+            put("auto", explicit[side] == null)
+        }
+        return buildJsonObject {
+            HandleSide.entries.forEach { side -> put(side.name.lowercase(), handle(side)) }
+        }
+    }
+
+    /** A compact description of a point's handles for a tool's reply. */
+    private fun PointHandles.describe(): String = HandleSide.entries.joinToString(", ") { side ->
+        val value = this[side]
+        if (value == null) {
+            "${side.name.lowercase()} auto"
+        } else {
+            "${side.name.lowercase()} (${value.x}, ${value.y})"
+        }
+    }
+
+    private fun mirroringJson(mirroring: PointMirroring): JsonObject = buildJsonObject {
+        put("horizontal", mirroring.horizontal.name)
+        put("vertical", mirroring.vertical.name)
+    }
+
+    private fun JsonObjectBuilder.putMirroringSchema() {
+        putJsonObject("mirroring") {
+            put("type", buildJsonArray { add(JsonPrimitive("object")); add(JsonPrimitive("null")) })
+            put("description", "Saved handle coupling for subsequent UI edits. Omitted axes keep their modes; null resets both to NONE. Does not move handles.")
+            put("additionalProperties", false)
+            putJsonObject("properties") {
+                for (axis in listOf("horizontal", "vertical")) {
+                    putJsonObject(axis) {
+                        put("type", "string")
+                        put("enum", buildJsonArray { HandleMirroring.entries.forEach { add(JsonPrimitive(it.name)) } })
+                        put("description", "NONE: independent; ANGLE: opposite angle, independent lengths; ANGLE_AND_LENGTH: opposite angle and equal lengths.")
+                    }
+                }
+            }
+        }
+    }
+
+    /** Adds the shared `handles` argument schema: one nullable `{x, y}` object per edge. */
+    private fun JsonObjectBuilder.putHandlesSchema() {
+        putJsonObject("handles") {
+            put(
+                "description",
+                "Bezier handles to change, each an {x, y} offset from the point in canvas fractions: left, " +
+                    "top, right, and bottom. Omitted handles keep their current value; null returns one, or all " +
+                    "four for handles itself, to automatic. Mirroring modes are preserved.",
+            )
+            put("type", buildJsonArray { add(JsonPrimitive("object")); add(JsonPrimitive("null")) })
+            put("additionalProperties", false)
+            putJsonObject("properties") {
+                HandleSide.entries.forEach { side ->
+                    putJsonObject(side.name.lowercase()) {
+                        put(
+                            "type",
+                            buildJsonArray { add(JsonPrimitive("object")); add(JsonPrimitive("null")) },
+                        )
+                        put(
+                            "description",
+                            "Offset from the point for the edge leaving it toward the ${side.name.lowercase()}; " +
+                                "null makes it automatic.",
+                        )
+                        put("additionalProperties", false)
+                        putJsonObject("properties") {
+                            putJsonObject("x") { put("type", "number") }
+                            putJsonObject("y") { put("type", "number") }
+                            putJsonObject("auto") {
+                                put("type", "boolean")
+                                put("description", "true returns the handle to automatic; x and y are then ignored")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private suspend fun setGrid(request: CallToolRequest): CallToolResult {
@@ -486,11 +687,15 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         }
         if (scale !in 1..3) return error("scale must be 1, 2, or 3")
 
-        val (meshState, points) = withContext(Dispatchers.Main) {
+        val (meshState, points, handles) = withContext(Dispatchers.Main) {
             val colors = configuration.palette()
-            configuration.meshState.value to configuration.meshPoints.map { row ->
-                row.map { (offset, colorId) -> offset to colors.findColor(colorId) }
-            }
+            Triple(
+                configuration.meshState.value,
+                configuration.meshPoints.map { row ->
+                    row.map { (offset, colorId) -> offset to colors.findColor(colorId) }
+                },
+                configuration.meshHandles.toList(),
+            )
         }
         val width = meshState.canvasWidth.takeIf { it > 0 } ?: 640
         val height = meshState.canvasHeight.takeIf { it > 0 } ?: 480
@@ -499,7 +704,7 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
             return error("The render would be ${width * scale}×${height * scale} px; the limit is $MAX_RENDER_SIDE px per side, so use a smaller scale")
         }
 
-        val painter = meshGradientPainter(points) ?: return error("The mesh has no complete patch to render")
+        val painter = meshGradientPainter(points, handles) ?: return error("The mesh has no complete patch to render")
         // The canvas blurs by this many pixels at 1x; scale it like the app's 2x and 3x PNG export.
         val blurRadius = (meshState.blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat() * scale
         val png = renderComposeScene(width * scale, height * scale, Density(scale.toFloat())) {
@@ -587,11 +792,17 @@ class MeshMcpServer(private val configuration: AppConfiguration) {
         // enough to edit every point once; a longer batch must repeat points, which only adds UI-thread work.
         const val MAX_BATCH_POINTS = MAX_GRID_SIZE * MAX_GRID_SIZE
 
-        // get_mesh returns at most this many points, so one call can't flood an agent's context: 16×16 is about
-        // 16 KB of JSON, while the largest grid's 4,096 points are a few hundred KB.
+        // get_mesh returns at most this many points, so one call can't flood an agent's context: 16×16 with
+        // four handles each is about 30 KB of JSON, while the largest grid's 4,096 points are a few hundred KB.
         const val MAX_READ_POINTS = 256
 
-        private val POINT_EDIT_FIELDS = setOf("row", "col", "x", "y", "colorId")
+        private val POINT_EDIT_FIELDS = setOf("row", "col", "x", "y", "colorId", "handles", "mirroring")
         private val RANGE_FIELDS = setOf("rowStart", "rowEnd", "colStart", "colEnd")
+        private val HANDLE_FIELDS = mapOf(
+            "left" to HandleSide.Left,
+            "top" to HandleSide.Top,
+            "right" to HandleSide.Right,
+            "bottom" to HandleSide.Bottom,
+        )
     }
 }

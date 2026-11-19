@@ -26,12 +26,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import model.SavedColor
+import model.HandleMirroring
+import model.PointMirroring
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -87,6 +90,153 @@ class MeshMcpServerTest {
         assertEquals(0.4f, topEdge["x"]!!.jsonPrimitive.float)
         assertEquals(0f, topEdge["y"]!!.jsonPrimitive.float)
         assertEquals(1L, topEdge["colorId"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `update_point sets and resets bezier handles, and get_mesh reports each one`() = runBlocking {
+        val result = callOk(
+            "update_point",
+            mapOf("row" to 1, "col" to 1, "handles" to mapOf("right" to mapOf("x" to 0.2, "y" to -0.1))),
+        )
+        assertTrue(result.text().contains("right (0.2, -0.1)"), result.text())
+
+        val point = getMesh()["points"]!!.jsonArray.map { it.jsonObject }
+            .single { it.int("row") == 1 && it.int("col") == 1 }
+        val handles = point["handles"]!!.jsonObject
+        assertEquals(0.2f, handles["right"]!!.jsonObject["x"]!!.jsonPrimitive.float)
+        assertEquals(-0.1f, handles["right"]!!.jsonObject["y"]!!.jsonPrimitive.float)
+        assertEquals(false, handles["right"]!!.jsonObject["auto"]!!.jsonPrimitive.boolean)
+        assertEquals(true, handles["left"]!!.jsonObject["auto"]!!.jsonPrimitive.boolean)
+
+        // Echoing what get_mesh returned leaves the handle as it was, automatic handles included.
+        callOk("update_points", mapOf("points" to listOf(point)))
+        assertEquals(0.2f, configuration.meshHandles[1][1].right!!.x)
+
+        // The echo was not an edit, so undo takes back the handle edit itself.
+        callOk("undo", emptyMap())
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+
+        // An explicit handle returns to automatic with null.
+        callOk(
+            "update_point",
+            mapOf("row" to 1, "col" to 1, "handles" to mapOf("left" to mapOf("x" to 0.05, "y" to 0.1))),
+        )
+        assertEquals(Offset(0.05f, 0.1f), configuration.meshHandles[1][1].left)
+        callOk("update_point", mapOf("row" to 1, "col" to 1, "handles" to mapOf("left" to null)))
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+    }
+
+    @Test
+    fun `update_point moves a point and sets its handles and mirroring as one undoable edit`() = runBlocking {
+        val before = configuration.meshPoints[1][1]
+        callOk(
+            "update_point",
+            mapOf(
+                "row" to 1,
+                "col" to 1,
+                "x" to 0.4,
+                "y" to 0.55,
+                "mirroring" to mapOf("horizontal" to "ANGLE_AND_LENGTH", "vertical" to "ANGLE"),
+                "handles" to mapOf(
+                    "left" to mapOf("x" to -0.12, "y" to 0.03),
+                    "bottom" to mapOf("x" to 0.02, "y" to 0.15),
+                ),
+            ),
+        )
+
+        assertEquals(Offset(0.4f, 0.55f), configuration.meshPoints[1][1].first)
+        assertEquals(Offset(-0.12f, 0.03f), configuration.meshHandles[1][1].left)
+        assertEquals(Offset(0.02f, 0.15f), configuration.meshHandles[1][1].bottom)
+        assertEquals(null, configuration.meshHandles[1][1].top)
+        assertEquals(PointMirroring(HandleMirroring.ANGLE_AND_LENGTH, HandleMirroring.ANGLE), configuration.meshHandles[1][1].mirroring)
+
+        // One undo restores position, automatic handles, and independent modes together.
+        callOk("undo", emptyMap())
+        assertEquals(before, configuration.meshPoints[1][1])
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+        assertEquals(PointMirroring(), configuration.meshHandles[1][1].mirroring)
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `update_points sets handles on many points as one undoable edit`() = runBlocking {
+        val result = callOk(
+            "update_points",
+            mapOf(
+                "points" to listOf(
+                    mapOf("row" to 0, "col" to 0, "handles" to mapOf("right" to mapOf("x" to 0.1, "y" to 0.02))),
+                    mapOf("row" to 0, "col" to 1, "handles" to mapOf("left" to mapOf("x" to -0.1, "y" to 0.02))),
+                    mapOf("row" to 0, "col" to 0, "mirroring" to mapOf("horizontal" to "ANGLE")),
+                    mapOf("row" to 0, "col" to 0, "mirroring" to mapOf("vertical" to "ANGLE_AND_LENGTH")),
+                    mapOf("row" to 0, "col" to 0, "handles" to mapOf("left" to mapOf("x" to -0.04, "y" to 0.06))),
+                ),
+            ),
+        )
+
+        assertEquals(Offset(0.1f, 0.02f), configuration.meshHandles[0][0].right)
+        assertEquals(Offset(-0.1f, 0.02f), configuration.meshHandles[0][1].left)
+        assertEquals(Offset(-0.04f, 0.06f), configuration.meshHandles[0][0].left)
+        assertEquals(PointMirroring(HandleMirroring.ANGLE, HandleMirroring.ANGLE_AND_LENGTH), configuration.meshHandles[0][0].mirroring)
+        assertTrue(result.text().contains("\"mirroring\":{\"horizontal\":\"ANGLE\",\"vertical\":\"ANGLE_AND_LENGTH\"}"), result.text())
+
+        callOk("undo", emptyMap())
+        assertTrue(configuration.meshHandles.all { row -> row.all { it.isAutomatic } })
+        assertTrue(configuration.meshHandles.all { row -> row.all { it.mirroring == PointMirroring() } })
+        assertEquals(false, configuration.canUndo.value)
+    }
+
+    @Test
+    fun `mirroring modes are readable patchable and independent of coordinate resets`() = runBlocking {
+        val before = configuration.meshHandles.toList()
+        val result = callOk("update_point", mapOf("row" to 1, "col" to 2, "mirroring" to mapOf("horizontal" to "ANGLE")))
+        assertTrue(result.text().contains("\"horizontal\":\"ANGLE\""), result.text())
+        assertTrue(configuration.meshHandles[1][2].isAutomatic, "Setting a mode does not move handles")
+        callOk("update_point", mapOf("row" to 1, "col" to 2, "mirroring" to mapOf("vertical" to "ANGLE_AND_LENGTH")))
+        val point = getMesh()["points"]!!.jsonArray.map { it.jsonObject }
+            .single { it.int("row") == 1 && it.int("col") == 2 }
+        assertEquals("ANGLE", point["mirroring"]!!.jsonObject["horizontal"]!!.jsonPrimitive.content)
+        assertEquals("ANGLE_AND_LENGTH", point["mirroring"]!!.jsonObject["vertical"]!!.jsonPrimitive.content)
+        assertTrue(callOk("update_points", mapOf("points" to listOf(point))).text().startsWith("No change"))
+
+        callOk("update_point", mapOf("row" to 1, "col" to 2, "handles" to mapOf("right" to mapOf("x" to 0.2, "y" to -0.1))))
+        assertEquals(null, configuration.meshHandles[1][2].left, "MCP changes only supplied coordinates, even with mirroring enabled")
+        callOk("update_point", mapOf("row" to 1, "col" to 2, "handles" to null))
+        assertTrue(configuration.meshHandles[1][2].isAutomatic)
+        assertEquals(PointMirroring(HandleMirroring.ANGLE, HandleMirroring.ANGLE_AND_LENGTH), configuration.meshHandles[1][2].mirroring)
+        callOk("update_point", mapOf("row" to 1, "col" to 2, "mirroring" to null))
+        assertEquals(before, configuration.meshHandles.toList())
+    }
+
+    @Test
+    fun `invalid mirroring modes reject the entire batch and schemas advertise the allowed choices`() = runBlocking {
+        val before = configuration.meshHandles.toList()
+        val invalid = listOf(
+            mapOf("horizontal" to "LENGTH"), mapOf("vertical" to 1), mapOf("vertical" to null),
+            mapOf("left" to "ANGLE"), "ANGLE", listOf("ANGLE"),
+        )
+        for (mirroring in invalid) {
+            val result = client.callTool("update_points", mapOf("points" to listOf(
+                mapOf("row" to 1, "col" to 1, "mirroring" to mapOf("horizontal" to "ANGLE")),
+                mapOf("row" to 1, "col" to 2, "x" to 0.5, "mirroring" to mirroring),
+            )))
+            assertEquals(true, result.isError, "$mirroring: ${result.text()}")
+            assertTrue(result.text().startsWith("points[1]:"), result.text())
+            assertEquals(before, configuration.meshHandles.toList())
+            assertEquals(0.67f, configuration.meshPoints[1][2].first.x)
+            assertEquals(false, configuration.canUndo.value)
+        }
+        val tools = client.listTools().tools
+        val single = tools.single { it.name == "update_point" }.inputSchema.properties!!
+        val batch = tools.single { it.name == "update_points" }.inputSchema.properties!!["points"]!!.jsonObject["items"]!!
+            .jsonObject["properties"]!!.jsonObject
+        for (properties in listOf(single, batch)) {
+            val schema = properties["mirroring"]!!.jsonObject
+            assertEquals(false, schema["additionalProperties"]!!.jsonPrimitive.boolean)
+            for (axis in listOf("horizontal", "vertical")) {
+                val choices = schema["properties"]!!.jsonObject[axis]!!.jsonObject["enum"]!!.jsonArray
+                assertEquals(listOf("NONE", "ANGLE", "ANGLE_AND_LENGTH"), choices.map { it.jsonPrimitive.content })
+            }
+        }
     }
 
     @Test

@@ -2,6 +2,8 @@ package des.c5inco.mesh.data
 
 import androidx.compose.ui.geometry.Offset
 import data.DocumentColor
+import data.DocumentControlPoint
+import data.DocumentHandles
 import data.MAX_GRID_SIZE
 import data.MIN_GRID_SIZE
 import data.MeshDocument
@@ -27,7 +29,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import model.HandleSide
+import model.HandleMirroring
 import model.MeshPoint
+import model.PointHandles
+import model.PointMirroring
 import model.SavedColor
 import model.defaultMeshPointGrid
 import model.generateMeshPointGrid
@@ -239,6 +245,191 @@ class AppConfigurationTest {
 
         assertFalse(configuration.canUndo.value)
         assertFalse(configuration.document.value.modified, "Following the window and unchanged values aren't edits")
+    }
+
+    @Test
+    fun `a bezier handle belongs to its point, survives a move, and undo restores it`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val handle = Offset(0.12f, -0.08f)
+
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, handle)
+        assertEquals(handle, configuration.meshHandles[1][1].right)
+        assertEquals(null, configuration.meshHandles[1][1].left, "Handles start independent")
+        assertEquals(null, configuration.meshHandles[1][1].top)
+        assertEquals(null, configuration.meshHandles[1][1].bottom)
+        assertFalse(configuration.meshHandles[1][1].isAutomatic)
+        assertTrue(configuration.canUndo.value)
+
+        configuration.updateMeshPoint(1, 1, Offset(0.4f, 0.6f) to 2L)
+        assertEquals(handle, configuration.meshHandles[1][1].right, "Moving a point carries its handles")
+
+        configuration.undo()
+        assertEquals(Offset(0.33f, 0.8f) to 2L, configuration.meshPoints[1][1])
+        assertEquals(handle, configuration.meshHandles[1][1].right)
+
+        configuration.undo()
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+        assertFalse(configuration.canUndo.value)
+    }
+
+    @Test
+    fun `opposite handle edits mirror both coordinates and reset all restores automatic handles`() = runBlocking {
+        val configuration = loadedConfiguration()
+        configuration.setHandleMirroring(1, 1, HandleSide.Left, HandleMirroring.ANGLE_AND_LENGTH)
+        configuration.setHandleMirroring(1, 1, HandleSide.Top, HandleMirroring.ANGLE_AND_LENGTH)
+        configuration.updateMeshHandle(1, 1, HandleSide.Left, Offset(-0.13f, 0.07f))
+        configuration.updateMeshHandle(1, 1, HandleSide.Top, Offset(-0.04f, -0.19f))
+        val paired = PointHandles(
+            left = Offset(-0.13f, 0.07f),
+            right = Offset(0.13f, -0.07f),
+            top = Offset(-0.04f, -0.19f),
+            bottom = Offset(0.04f, 0.19f),
+            mirroring = PointMirroring(HandleMirroring.ANGLE_AND_LENGTH, HandleMirroring.ANGLE_AND_LENGTH),
+        )
+        assertEquals(paired, configuration.meshHandles[1][1])
+
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(0.21f, -0.06f))
+        val updated = paired.copy(left = Offset(-0.21f, 0.06f), right = Offset(0.21f, -0.06f))
+        assertEquals(updated, configuration.meshHandles[1][1], "The perpendicular pair is unchanged")
+        configuration.resetMeshHandles(1, 1)
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+        assertEquals(paired.mirroring, configuration.meshHandles[1][1].mirroring, "Reset all retains the modes")
+        configuration.undo()
+        assertEquals(updated, configuration.meshHandles[1][1], "One undo restores all four handles")
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(4, fileVersion(documentFile))
+        assertEquals(updated, openedConfiguration(documentFile).meshHandles[1][1])
+    }
+
+    @Test
+    fun `angle mirroring preserves the opposite pixel length on a rectangular canvas`() = runBlocking {
+        val configuration = loadedConfiguration()
+        configuration.setHandleMirroring(1, 1, HandleSide.Right, HandleMirroring.ANGLE)
+        assertTrue(configuration.canUndo.value, "A saved mode is an undoable document edit")
+        assertTrue(configuration.document.value.modified)
+        assertEquals(HandleMirroring.ANGLE, configuration.handleMirroring(1, 1, HandleSide.Left))
+        assertEquals(HandleMirroring.NONE, configuration.handleMirroring(1, 1, HandleSide.Top))
+        assertEquals(HandleMirroring.NONE, configuration.handleMirroring(1, 2, HandleSide.Right))
+        configuration.updateMeasuredCanvasSize(600, 300)
+        val original = PointHandles(
+            left = Offset(-0.1f, 0f), top = Offset(0.02f, -0.17f),
+            mirroring = PointMirroring(horizontal = HandleMirroring.ANGLE),
+        )
+        configuration.updateMeshPoint(1, 1, configuration.meshPoints[1][1], original)
+
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(0f, 0.4f))
+        assertEquals(0f, configuration.meshHandles[1][1].left!!.x, 1e-6f)
+        assertEquals(-0.2f, configuration.meshHandles[1][1].left!!.y, 1e-6f, "60px stays 60px after rotating")
+        assertEquals(original.top, configuration.meshHandles[1][1].top)
+        configuration.undo()
+        assertEquals(original, configuration.meshHandles[1][1], "Both changes undo together")
+
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(0.3f, 0.8f))
+        val opposite = configuration.meshHandles[1][1].left!!
+        assertEquals(-0.06f, opposite.x, 1e-6f)
+        assertEquals(-0.16f, opposite.y, 1e-6f)
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset.Zero)
+        assertEquals(opposite, configuration.meshHandles[1][1].left, "Zero has no angle; retain its partner")
+
+        configuration.setHandleMirroring(1, 1, HandleSide.Left, HandleMirroring.NONE)
+        configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(0.2f, -0.3f))
+        assertEquals(opposite, configuration.meshHandles[1][1].left, "Unlinking leaves the partner unchanged")
+
+        configuration.resetMeshHandles(1, 1)
+        configuration.updateMeshHandle(1, 1, HandleSide.Bottom, Offset(0f, 0.2f))
+        configuration.setHandleMirroring(1, 1, HandleSide.Top, HandleMirroring.ANGLE)
+        configuration.updateMeshHandle(1, 1, HandleSide.Top, Offset(0.3f, 0f))
+        assertEquals(-0.1f, configuration.meshHandles[1][1].bottom!!.x, 1e-6f)
+        assertEquals(0f, configuration.meshHandles[1][1].bottom!!.y, 1e-6f)
+    }
+
+    @Test
+    fun `undoing a resize restores the handles the old grid had`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val handle = Offset(0.1f, -0.2f)
+        configuration.setHandleMirroring(1, 1, HandleSide.Left, HandleMirroring.ANGLE_AND_LENGTH)
+        configuration.updateMeshHandle(1, 1, HandleSide.Left, handle)
+
+        configuration.updateTotalRows(5)
+        assertEquals(List(5) { 4 }, configuration.meshHandles.map { it.size })
+        assertTrue(configuration.meshHandles.all { row -> row.all { it.isAutomatic } })
+        assertEquals(HandleMirroring.NONE, configuration.handleMirroring(1, 1, HandleSide.Left))
+
+        configuration.undo()
+        assertEquals(3 to 4, configuration.meshState.value.let { it.rows to it.cols })
+        assertEquals(handle, configuration.meshHandles[1][1].left)
+        assertEquals(HandleMirroring.ANGLE_AND_LENGTH, configuration.handleMirroring(1, 1, HandleSide.Right))
+    }
+
+    @Test
+    fun `mirroring modes autosave without explicit handles and survive reopen undo and redo`() = runBlocking {
+        val configuration = loadedConfiguration()
+        assertTrue(configuration.saveDocument(documentFile))
+        assertEquals(1, fileVersion(documentFile))
+        configuration.setHandleMirroring(1, 2, HandleSide.Right, HandleMirroring.ANGLE)
+        configuration.setHandleMirroring(1, 2, HandleSide.Top, HandleMirroring.ANGLE_AND_LENGTH)
+        configuration.flushPendingSave()
+        assertEquals(4, fileVersion(documentFile), "Modes alone require a build that keeps them")
+
+        val reopened = openedConfiguration(documentFile)
+        val modes = PointMirroring(HandleMirroring.ANGLE, HandleMirroring.ANGLE_AND_LENGTH)
+        assertEquals(PointHandles(mirroring = modes), reopened.meshHandles[1][2])
+        assertEquals(PointHandles(), reopened.meshHandles[1][1], "Other points stay independent")
+        reopened.setHandleMirroring(1, 2, HandleSide.Left, HandleMirroring.ANGLE)
+        assertFalse(reopened.canUndo.value, "Selecting the saved mode is not another edit")
+        assertFalse(reopened.document.value.modified)
+
+        reopened.setHandleMirroring(1, 2, HandleSide.Left, HandleMirroring.NONE)
+        assertTrue(reopened.document.value.modified)
+        reopened.undo()
+        assertEquals(modes, reopened.meshHandles[1][2].mirroring)
+        reopened.redo()
+        assertEquals(PointMirroring(vertical = HandleMirroring.ANGLE_AND_LENGTH), reopened.meshHandles[1][2].mirroring)
+
+        reopened.setHandleMirroring(1, 2, HandleSide.Bottom, HandleMirroring.NONE)
+        reopened.flushPendingSave()
+        assertEquals(1, fileVersion(documentFile), "Default modes need no new file format")
+        assertEquals(PointHandles(), openedConfiguration(documentFile).meshHandles[1][2])
+    }
+
+    @Test
+    fun `a document with explicit handles is format 3, keeps them when it opens, and a resize clears them`() = runBlocking {
+        val configuration = loadedConfiguration()
+        val top = Offset(0.02f, -0.18f)
+        val bottom = Offset(-0.05f, 0.22f)
+        configuration.updateMeshHandle(0, 1, HandleSide.Top, top)
+        configuration.updateMeshHandle(1, 1, HandleSide.Bottom, bottom)
+        assertTrue(configuration.saveDocument(documentFile))
+
+        assertEquals(3, fileVersion(documentFile))
+        val saved = saved(documentFile)
+        assertEquals(
+            DocumentHandles(top = DocumentControlPoint(top.x, top.y)),
+            saved.points[0][1].handles,
+        )
+        assertEquals(
+            DocumentHandles(bottom = DocumentControlPoint(bottom.x, bottom.y)),
+            saved.points[1][1].handles,
+        )
+        assertEquals(null, saved.points[0][0].handles, "A point with only automatic handles stores none")
+
+        // A real format-3 file has no mirroring field, unlike the defaults this build writes.
+        val legacyText = documentFile.readText().replace(Regex(""",\s*"mirroring"\s*:\s*\{[^}]*}"""), "")
+        assertFalse(legacyText.contains("mirroring"))
+        documentFile.writeText(legacyText)
+        val reopened = openedConfiguration(documentFile)
+        assertEquals(top, reopened.meshHandles[0][1].top)
+        assertEquals(null, reopened.meshHandles[0][1].bottom)
+        assertEquals(bottom, reopened.meshHandles[1][1].bottom)
+        assertEquals(null, reopened.meshHandles[1][1].top)
+        assertEquals(PointMirroring(), reopened.meshHandles[0][1].mirroring, "Format 3 defaults to independent pairs")
+        assertTrue(reopened.meshHandles[0][0].isAutomatic)
+        assertFalse(reopened.document.value.modified)
+
+        // A new grid has new points, so its handles start automatic again.
+        reopened.updateTotalRows(5)
+        assertEquals(List(5) { 4 }, reopened.meshHandles.map { it.size })
+        assertTrue(reopened.meshHandles.all { row -> row.all { it.isAutomatic } })
     }
 
     @Test

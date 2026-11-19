@@ -48,11 +48,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import model.HandleSide
+import model.HandleMirroring
+import model.PointHandles
 import model.SavedColor
+import model.automaticHandles
 import model.defaultMeshPointGrid
 import model.distributedEvenly
+import model.effectiveHandle
 import model.findColor
 import model.generateMeshPointGrid
+import model.handlesAt
 import model.replaceColor
 import model.withUpdatedMeshPoint
 import java.awt.Toolkit
@@ -101,15 +107,29 @@ sealed interface DocumentChange {
     data class SaveFailed(val message: String, val revision: DocumentRevision) : DocumentChange
 }
 
-/** Moves and recolors the point at [row] and [col]; see [AppConfiguration.updateMeshPoints]. */
-data class MeshPointEdit(val row: Int, val col: Int, val point: Pair<Offset, Long>)
+/** Moves and recolors the point at [row] and [col], and optionally its Bezier handles; see [AppConfiguration.updateMeshPoints]. */
+data class MeshPointEdit(
+    val row: Int,
+    val col: Int,
+    val point: Pair<Offset, Long>,
+    val handles: PointHandles? = null,
+)
 
 /** The parts of the document that undo and redo restore. The grid size comes from [points]. */
 private data class EditSnapshot(
     val points: List<List<Pair<Offset, Long>>>,
+    val handles: List<List<PointHandles>>,
     val blurLevel: Float,
     val canvasBackgroundColor: Long,
     val customColors: List<SavedColor>,
+)
+
+/** The document data code export captures on the UI thread in one go. */
+private data class ExportMesh(
+    val points: List<List<Pair<Offset, Long>>>,
+    val handles: List<List<PointHandles>>,
+    val blurLevel: Float,
+    val colors: List<SavedColor>,
 )
 
 /**
@@ -186,6 +206,9 @@ class AppConfiguration(
      * background work such as loading hands its result to the UI thread.
      */
     val meshPoints = mutableStateListOf<List<Pair<Offset, Long>>>()
+
+    /** Each point's Bezier handles, in the same shape as [meshPoints]; automatic handles are null. */
+    val meshHandles = mutableStateListOf<List<PointHandles>>()
 
     val document = MutableStateFlow(DocumentStatus())
 
@@ -292,6 +315,7 @@ class AppConfiguration(
         customColors = customColors.value,
         points = meshPoints.toList(),
         colors = palette(),
+        handles = meshHandles.toList(),
     )
 
     /**
@@ -402,6 +426,8 @@ class AppConfiguration(
             val generatedPoints = generateMeshPointGrid(editedState.rows, editedState.cols, paletteIds())
             meshPoints.clear()
             meshPoints.addAll(generatedPoints)
+            meshHandles.clear()
+            meshHandles.addAll(automaticHandles(editedState.rows, editedState.cols))
             meshState.update { it.copy(rows = editedState.rows, cols = editedState.cols) }
             history.record(before, group = null)
         }
@@ -411,7 +437,16 @@ class AppConfiguration(
     /** Replaces the open document. Call on the UI thread once the presets have loaded. */
     private fun show(replacement: MeshDocument?, file: File?, modified: Boolean = false, recordSession: Boolean = true) {
         val opened = replacement?.open(loadedPresetColors, nextCustomColorId::getAndIncrement)
-            ?: OpenedMesh(MeshState(), TRANSPARENT_COLOR_ID, emptyList(), defaultMeshPointGrid(paletteIds()))
+            ?: run {
+                val points = defaultMeshPointGrid(paletteIds())
+                OpenedMesh(
+                    meshState = MeshState(),
+                    backgroundColorId = TRANSPARENT_COLOR_ID,
+                    customColors = emptyList(),
+                    points = points,
+                    handles = automaticHandles(points.size, points.first().size),
+                )
+            }
         generation.incrementAndGet()
         // In Fill mode the canvas keeps the size it fills in the window, not the size saved with the file.
         val measured = measuredCanvasSize
@@ -426,6 +461,8 @@ class AppConfiguration(
         customColors.value = opened.customColors
         meshPoints.clear()
         meshPoints.addAll(opened.points)
+        meshHandles.clear()
+        meshHandles.addAll(opened.handles)
         history.clear()
         // A failed save belongs to the document that had it, not to whatever opens next.
         _saveFailure.value = null
@@ -665,11 +702,19 @@ class AppConfiguration(
                 val generatedPoints = generateMeshPointGrid(state.rows, state.cols, paletteIds())
                 meshPoints.clear()
                 meshPoints.addAll(generatedPoints)
+                meshHandles.clear()
+                meshHandles.addAll(automaticHandles(state.rows, state.cols))
             }
         }
     }
 
-    fun updateMeshPoint(row: Int, col: Int, point: Pair<Offset, Long>) = recordEdit(group = "point $row,$col") {
+    /** Moves and/or recolors one point, and sets any of its Bezier handles given in [handles]. */
+    fun updateMeshPoint(
+        row: Int,
+        col: Int,
+        point: Pair<Offset, Long>,
+        handles: PointHandles? = null,
+    ) = recordEdit(group = "point $row,$col") {
         val updatedPoints = meshPoints.withUpdatedMeshPoint(
             row = row,
             col = col,
@@ -677,6 +722,54 @@ class AppConfiguration(
             constrainEdges = constrainEdgePoints,
         )
         meshPoints[row] = updatedPoints[row]
+        if (handles != null) meshHandles[row] = meshHandles[row].toMutableList().also { it[col] = handles }
+    }
+
+    fun handleMirroring(row: Int, col: Int, side: HandleSide): HandleMirroring =
+        meshHandles.handlesAt(row, col).mirroring[side]
+
+    /** Saves how subsequent edits affect the pair, without changing its current geometry. */
+    fun setHandleMirroring(row: Int, col: Int, side: HandleSide, mirroring: HandleMirroring) = recordEdit {
+        val current = meshHandles.handlesAt(row, col)
+        val updated = current.copy(mirroring = current.mirroring.with(side, mirroring))
+        if (updated != current) {
+            meshHandles[row] = meshHandles[row].toMutableList().also { it[col] = updated }
+        }
+    }
+
+    /** Edits from the canvas and popup use the same pairing mode; API edits remain independent. */
+    fun updateMeshHandle(row: Int, col: Int, side: HandleSide, offset: Offset): Boolean {
+        val mirroring = handleMirroring(row, col, side)
+        return recordEdit(group = "handle $row,$col,$side,$mirroring") {
+            val current = meshHandles.handlesAt(row, col)
+            val opposite = when (mirroring) {
+                HandleMirroring.NONE -> current[side.opposite]
+                HandleMirroring.ANGLE_AND_LENGTH -> -offset
+                HandleMirroring.ANGLE -> {
+                    val positions = meshPoints.map { points -> points.map { it.first } }
+                    val previous = positions.effectiveHandle(row, col, side.opposite, current)
+                    val state = meshState.value
+                    val width = state.canvasWidth.coerceAtLeast(1).toFloat()
+                    val height = state.canvasHeight.coerceAtLeast(1).toFloat()
+                    val length = Offset(offset.x * width, offset.y * height).getDistance()
+                    val oppositeLength = Offset(previous.x * width, previous.y * height).getDistance()
+                    // A collapsed handle has no angle. Leave its partner alone until it has one again.
+                    if (length == 0f) current[side.opposite] else -offset * (oppositeLength / length)
+                }
+            }
+            val updated = current.with(side, offset).with(side.opposite, opposite)
+            if (current != updated) {
+                meshHandles[row] = meshHandles[row].toMutableList().also { it[col] = updated }
+            }
+        }
+    }
+
+    /** Returns all four of a point's handles to automatic, as a single undo step. */
+    fun resetMeshHandles(row: Int, col: Int) = recordEdit(group = "handles $row,$col") {
+        val current = meshHandles.handlesAt(row, col)
+        if (!current.isAutomatic) {
+            meshHandles[row] = meshHandles[row].toMutableList().also { it[col] = PointHandles(mirroring = current.mirroring) }
+        }
     }
 
     /**
@@ -690,10 +783,18 @@ class AppConfiguration(
         }
         return recordEdit {
             var points = meshPoints.toList()
-            edits.forEach { (row, col, point) ->
-                points = points.withUpdatedMeshPoint(row = row, col = col, point = point, constrainEdges = constrainEdgePoints)
+            val handles = meshHandles.map { it.toMutableList() }.toMutableList()
+            edits.forEach { edit ->
+                points = points.withUpdatedMeshPoint(
+                    row = edit.row,
+                    col = edit.col,
+                    point = edit.point,
+                    constrainEdges = constrainEdgePoints,
+                )
+                edit.handles?.let { handles[edit.row][edit.col] = it }
             }
             points.forEachIndexed { row, updatedRow -> if (meshPoints[row] != updatedRow) meshPoints[row] = updatedRow }
+            handles.forEachIndexed { row, updatedRow -> if (meshHandles[row] != updatedRow) meshHandles[row] = updatedRow }
         }
     }
 
@@ -711,9 +812,12 @@ class AppConfiguration(
         scope.launch {
             loadStartupDocument.await()
             // Read on the UI thread, which owns the mesh, so a grid being replaced can't be caught half-written.
-            val (colorPoints, blurLevel, availableColorsAsList) = withContext(Dispatchers.Main) {
-                Triple(meshPoints.toList(), meshState.value.blurLevel, palette())
+            val export = withContext(Dispatchers.Main) {
+                ExportMesh(meshPoints.toList(), meshHandles.toList(), meshState.value.blurLevel, palette())
             }
+            val colorPoints = export.points
+            val blurLevel = export.blurLevel
+            val availableColorsAsList = export.colors
             val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
             val painterType = MeshGradientPainter::class.asClassName()
@@ -730,8 +834,9 @@ class AppConfiguration(
                 points.forEachIndexed { column, pair ->
                     val hexString = availableColorsAsList.findColor(pair.second)
                         .toHexStringNoHash(includeAlpha = true)
+                    val handles = export.handles.handlesAt(row, column)
                     initializer.add(
-                        "setVertex(%L, %L, %T(%Lf, %Lf), %T(0x%L))\n",
+                        "setVertex(%L, %L, %T(%Lf, %Lf), %T(0x%L)",
                         row,
                         column,
                         Offset::class,
@@ -740,6 +845,12 @@ class AppConfiguration(
                         Color::class,
                         hexString,
                     )
+                    // Only explicit handles: the ones left out stay automatic, as they do in the app.
+                    handles.left?.let { initializer.add(", leftControlPoint = %T(%Lf, %Lf)", Offset::class, it.x, it.y) }
+                    handles.top?.let { initializer.add(", topControlPoint = %T(%Lf, %Lf)", Offset::class, it.x, it.y) }
+                    handles.right?.let { initializer.add(", rightControlPoint = %T(%Lf, %Lf)", Offset::class, it.x, it.y) }
+                    handles.bottom?.let { initializer.add(", bottomControlPoint = %T(%Lf, %Lf)", Offset::class, it.x, it.y) }
+                    initializer.add(")\n")
                 }
             }
 
@@ -797,6 +908,7 @@ class AppConfiguration(
 
     private fun snapshot() = EditSnapshot(
         points = meshPoints.toList(),
+        handles = meshHandles.toList(),
         blurLevel = meshState.value.blurLevel,
         canvasBackgroundColor = canvasBackgroundColor.value,
         customColors = customColors.value,
@@ -830,6 +942,8 @@ class AppConfiguration(
         customColors.value = snapshot.customColors
         meshPoints.clear()
         meshPoints.addAll(snapshot.points)
+        meshHandles.clear()
+        meshHandles.addAll(snapshot.handles)
         markEdited()
     }
 

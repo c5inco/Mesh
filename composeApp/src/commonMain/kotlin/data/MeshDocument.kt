@@ -11,9 +11,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import model.MeshPoint
+import model.PointHandles
+import model.PointMirroring
 import model.SavedColor
 import model.defaultMeshPointGrid
 import model.generateMeshPointGrid
+import model.handlesAt
 import model.toOffsetGrid
 
 /** A color stored by value, so a document keeps its colors on any machine. */
@@ -31,21 +34,47 @@ data class DocumentColor(
     }
 }
 
+/** A Bezier control point offset from its point, in normalized canvas coordinates. */
+@Serializable
+data class DocumentControlPoint(
+    val x: Float,
+    val y: Float,
+) {
+    init {
+        require(x.isFinite() && y.isFinite()) { "A Bezier control point needs finite coordinates" }
+    }
+}
+
+/** A point's four Bezier handles; a null handle is inferred from the point's neighbors. */
+@Serializable
+data class DocumentHandles(
+    val left: DocumentControlPoint? = null,
+    val top: DocumentControlPoint? = null,
+    val right: DocumentControlPoint? = null,
+    val bottom: DocumentControlPoint? = null,
+    val mirroring: PointMirroring = PointMirroring(),
+) {
+    val isAutomatic: Boolean
+        get() = left == null && top == null && right == null && bottom == null
+}
+
 /** A mesh point; a null color is transparent, as after its color was deleted. */
 @Serializable
 data class DocumentPoint(
     val x: Float,
     val y: Float,
     val color: DocumentColor?,
+    val handles: DocumentHandles? = null,
 )
 
 /**
  * The contents of a `.mesh` file: the canvas settings, the grid of points, and the document's custom colors.
  * Preset colors are global, so points that use one store its value and find it again when the file opens.
  *
- * The file's format is derived from the grid rather than stored: a grid the old 10 × 10 limit held is written
- * as format 1, which every build reads, and a larger one as format 2, which only a build that knows about
- * larger grids can open.
+ * The file's format is derived from the document rather than stored: a grid the old 10 × 10 limit held and
+ * automatic Bezier handles is written as format 1, which every build reads; a larger grid as format 2; and a
+ * document with explicit Bezier handles as format 3. Non-default handle mirroring needs format 4,
+ * so builds that would lose the modes cannot open it.
  */
 @Serializable
 data class MeshDocument(
@@ -66,14 +95,16 @@ data class MeshDocument(
     }
 
     /**
-     * The format to write: [FIRST_VERSION] while the grid fits the old app's limit, which every build reads,
-     * and [LARGE_GRID_VERSION] once it doesn't, since only a build that reads larger grids can open it.
+     * The format to write: [MIRRORING_VERSION] for non-default modes, [HANDLES_VERSION] for explicit handles;
+     * otherwise [FIRST_VERSION] while the grid fits the old app's limit, which every build reads, and
+     * [LARGE_GRID_VERSION] once it doesn't, since only a build that reads larger grids can open it.
      */
     private val version: Int
-        get() = if (points.size > LEGACY_MAX_GRID_SIZE || points[0].size > LEGACY_MAX_GRID_SIZE) {
-            LARGE_GRID_VERSION
-        } else {
-            FIRST_VERSION
+        get() = when {
+            points.any { row -> row.any { it.handles != null && it.handles.mirroring != PointMirroring() } } -> MIRRORING_VERSION
+            points.any { row -> row.any { it.handles?.isAutomatic == false } } -> HANDLES_VERSION
+            points.size > LEGACY_MAX_GRID_SIZE || points[0].size > LEGACY_MAX_GRID_SIZE -> LARGE_GRID_VERSION
+            else -> FIRST_VERSION
         }
 
     /** The file's text, with `version` first: a reader checks it before it decodes the rest. */
@@ -88,7 +119,7 @@ data class MeshDocument(
 
     companion object {
         /** The newest format this build reads; a file that names a later one doesn't open. */
-        const val CURRENT_VERSION = 2
+        const val CURRENT_VERSION = 4
         const val FILE_EXTENSION = "mesh"
 
         /**
@@ -100,6 +131,12 @@ data class MeshDocument(
 
         /** The format for a mesh larger than the old 10 × 10 limit. */
         private const val LARGE_GRID_VERSION = 2
+
+        /** The format for a document with explicit Bezier handles, which older builds would drop. */
+        private const val HANDLES_VERSION = 3
+
+        /** The format for saved handle mirroring modes, including points with automatic positions. */
+        private const val MIRRORING_VERSION = 4
 
         private val json = Json {
             prettyPrint = true
@@ -138,6 +175,7 @@ data class OpenedMesh(
     val backgroundColorId: Long,
     val customColors: List<SavedColor>,
     val points: List<List<Pair<Offset, Long>>>,
+    val handles: List<List<PointHandles>>,
 )
 
 /** Builds a document from the editor's state; [colors] must include every color the IDs refer to. */
@@ -147,13 +185,23 @@ fun meshDocumentOf(
     customColors: List<SavedColor>,
     points: List<List<Pair<Offset, Long>>>,
     colors: List<SavedColor>,
+    handles: List<List<PointHandles>> = emptyList(),
 ): MeshDocument {
     fun colorOf(id: Long) = colors.find { it.uid == id }?.toDocumentColor()
     return MeshDocument(
         meshState = meshState,
         backgroundColor = colorOf(backgroundColorId),
         customColors = customColors.map { it.toDocumentColor() },
-        points = points.map { row -> row.map { (offset, colorId) -> DocumentPoint(offset.x, offset.y, colorOf(colorId)) } },
+        points = points.mapIndexed { row, pointsInRow ->
+            pointsInRow.mapIndexed { col, (offset, colorId) ->
+                DocumentPoint(
+                    x = offset.x,
+                    y = offset.y,
+                    color = colorOf(colorId),
+                    handles = handles.handlesAt(row, col).toDocumentHandles(),
+                )
+            }
+        },
     )
 }
 
@@ -182,8 +230,33 @@ fun MeshDocument.open(presetColors: List<SavedColor>, newCustomColorId: () -> Lo
         backgroundColorId = idOf(backgroundColor),
         points = points.map { row -> row.map { Offset(it.x, it.y) to idOf(it.color) } },
         customColors = custom,
+        handles = points.map { row -> row.map { it.handles.toPointHandles() } },
     )
 }
+
+/** A point's handles and modes, or null when all positions are automatic and both pairs independent. */
+fun PointHandles.toDocumentHandles(): DocumentHandles? = if (isAutomatic && mirroring == PointMirroring()) {
+    null
+} else {
+    DocumentHandles(
+        left = left?.toDocumentControlPoint(),
+        top = top?.toDocumentControlPoint(),
+        right = right?.toDocumentControlPoint(),
+        bottom = bottom?.toDocumentControlPoint(),
+        mirroring = mirroring,
+    )
+}
+
+/** A file's handles as the editor's, filling in automatic ones for a point that has none. */
+fun DocumentHandles?.toPointHandles(): PointHandles = PointHandles(
+    left = this?.left?.let { Offset(it.x, it.y) },
+    top = this?.top?.let { Offset(it.x, it.y) },
+    right = this?.right?.let { Offset(it.x, it.y) },
+    bottom = this?.bottom?.let { Offset(it.x, it.y) },
+    mirroring = this?.mirroring ?: PointMirroring(),
+)
+
+private fun Offset.toDocumentControlPoint() = DocumentControlPoint(x = x, y = y)
 
 /**
  * The largest grid the old app could save. It bounds legacy data, decides when a document is written in the

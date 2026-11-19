@@ -122,6 +122,7 @@ fun MeshWindow(
                 documentFile = document.file,
                 saveFailure = saveFailure,
                 meshPoints = configuration.meshPoints,
+                meshHandles = configuration.meshHandles,
                 availableColors = availableColors,
                 exportScale = exportScale,
                 canvasSize = meshState.canvasWidth to meshState.canvasHeight,

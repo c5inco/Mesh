@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -23,37 +24,51 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.paint
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.MeshGradientPainter
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import data.DimensionMode
 import des.c5inco.mesh.common.PointCursor
 import des.c5inco.mesh.data.AppConfiguration.Companion.MAX_BLUR_LEVEL
 import des.c5inco.mesh.data.Notifications
+import des.c5inco.mesh.testing.MeshTestTags
 import des.c5inco.mesh.ui.components.CanvasSnackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import model.HandleSide
+import model.PointHandles
 import model.SavedColor
+import model.effectiveHandle
 import model.findColor
+import model.handlesAt
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.intui.core.theme.IntUiDarkTheme
 import org.jetbrains.jewel.ui.component.Text
@@ -66,8 +81,12 @@ private const val MAX_AXIS_SUBDIVISIONS = 100
 /**
  * The painter for a grid of points, or null before a complete patch exists (points load
  * asynchronously). Shared by the canvas and the MCP render_png tool so both draw the same gradient.
+ * [handles] are the points' Bezier handles; automatic ones are inferred by the painter.
  */
-fun meshGradientPainter(colorPoints: List<List<Pair<Offset, Color>>>): MeshGradientPainter? {
+fun meshGradientPainter(
+    colorPoints: List<List<Pair<Offset, Color>>>,
+    handles: List<List<PointHandles>> = emptyList(),
+): MeshGradientPainter? {
     if (colorPoints.size < 2 || colorPoints.first().size < 2) return null
     return MeshGradientPainter(
         rows = colorPoints.lastIndex,
@@ -76,7 +95,17 @@ fun meshGradientPainter(colorPoints: List<List<Pair<Offset, Color>>>): MeshGradi
     ) {
         colorPoints.forEachIndexed { row, points ->
             points.forEachIndexed { column, (position, color) ->
-                setVertex(row, column, position, color)
+                val pointHandles = handles.handlesAt(row, column)
+                setVertex(
+                    row,
+                    column,
+                    position,
+                    color,
+                    leftControlPoint = pointHandles.left ?: Offset.Unspecified,
+                    topControlPoint = pointHandles.top ?: Offset.Unspecified,
+                    rightControlPoint = pointHandles.right ?: Offset.Unspecified,
+                    bottomControlPoint = pointHandles.bottom ?: Offset.Unspecified,
+                )
             }
         }
     }
@@ -84,11 +113,12 @@ fun meshGradientPainter(colorPoints: List<List<Pair<Offset, Color>>>): MeshGradi
 
 /**
  * Normalized positions of the subdivision grid across the mesh patches, matching the bicubic
- * Bezier surface geometry and inferred tangents of [MeshGradientPainter]. Shared patch edges and
+ * Bezier surface geometry and tangents of [MeshGradientPainter]. Shared patch edges and
  * corners are emitted once so semi-transparent dots don't double-blend along patch seams.
  */
 internal fun meshSubdivisionPoints(
     points: List<List<Offset>>,
+    handles: List<List<PointHandles>> = emptyList(),
     steps: Int = defaultSubdivisionSteps(points),
 ): List<Offset> {
     if (points.size < 2 || points.first().size < 2 || steps < 1) return emptyList()
@@ -103,18 +133,11 @@ internal fun meshSubdivisionPoints(
 
     for (row in 0..rows) {
         for (column in 0..columns) {
-            val current = points[row][column]
-            val leftNeighbor = if (column > 0) points[row][column - 1] else current
-            val rightNeighbor = if (column < columns) points[row][column + 1] else current
-            val horizontalVector = (rightNeighbor - leftNeighbor).normalized() * 0.33f
-            leftBezier[row][column] = horizontalVector * (leftNeighbor - current).getDistance() * -1f
-            rightBezier[row][column] = horizontalVector * (rightNeighbor - current).getDistance()
-
-            val topNeighbor = if (row > 0) points[row - 1][column] else current
-            val bottomNeighbor = if (row < rows) points[row + 1][column] else current
-            val verticalVector = (bottomNeighbor - topNeighbor).normalized() * 0.33f
-            topBezier[row][column] = verticalVector * (topNeighbor - current).getDistance() * -1f
-            bottomBezier[row][column] = verticalVector * (bottomNeighbor - current).getDistance()
+            val pointHandles = handles.handlesAt(row, column)
+            leftBezier[row][column] = points.effectiveHandle(row, column, HandleSide.Left, pointHandles)
+            rightBezier[row][column] = points.effectiveHandle(row, column, HandleSide.Right, pointHandles)
+            topBezier[row][column] = points.effectiveHandle(row, column, HandleSide.Top, pointHandles)
+            bottomBezier[row][column] = points.effectiveHandle(row, column, HandleSide.Bottom, pointHandles)
         }
     }
 
@@ -178,11 +201,6 @@ private fun cubicBezier(p0: Offset, p1: Offset, p2: Offset, p3: Offset, t: Float
     )
 }
 
-private fun Offset.normalized(): Offset {
-    val distance = getDistance()
-    return if (distance == 0f) Offset.Zero else Offset(x / distance, y / distance)
-}
-
 @Composable
 fun GradientCanvas(
     exportGraphicsLayer: GraphicsLayer,
@@ -193,12 +211,18 @@ fun GradientCanvas(
     canvasHeight: Int,
     blurLevel: Float = 0f,
     meshPoints: List<List<Pair<Offset, Long>>>,
+    meshHandles: List<List<PointHandles>> = emptyList(),
     showPoints: Boolean,
+    selectedPoint: Pair<Int, Int>? = null,
+    activeHandle: HandleSide? = null,
     canvasBackgroundColor: Long,
     availableColors: List<SavedColor>,
     onResize: (Int, Int) -> Unit = { _, _ -> },
     onTogglePoints: () -> Unit = {},
     onPointDragStartEnd: (Pair<Int, Int>?) -> Unit = { _ -> },
+    onPointSelected: (row: Int, col: Int) -> Unit = { _, _ -> },
+    onHandleActivated: (side: HandleSide) -> Unit = {},
+    onHandleDrag: (row: Int, col: Int, side: HandleSide, offset: Offset) -> Unit = { _, _, _, _ -> },
     onPointDrag: (row: Int, col: Int, point: Pair<Offset, Long>) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -213,10 +237,26 @@ fun GradientCanvas(
         row.map { (position, colorId) -> position to availableColors.findColor(colorId) }
     }
     val pointPositions = meshPoints.map { row -> row.map { (position, _) -> position } }
-    val gradientPainter = remember(colorPoints) { meshGradientPainter(colorPoints) }
-    val subdivisionPoints = remember(pointPositions, showPoints) {
-        if (showPoints) meshSubdivisionPoints(pointPositions) else emptyList()
+    // A copy read in composition, so any handle change redraws the painter and the subdivision dots.
+    val handlesSnapshot = meshHandles.toList()
+    val gradientPainter = remember(colorPoints, handlesSnapshot) { meshGradientPainter(colorPoints, handlesSnapshot) }
+    val subdivisionPoints = remember(pointPositions, handlesSnapshot, showPoints) {
+        if (showPoints) meshSubdivisionPoints(pointPositions, handlesSnapshot) else emptyList()
     }
+    val selectionColor = JewelTheme.colorPalette.blueOrNull(6)
+        ?: requireNotNull(IntUiDarkTheme.colors.blueOrNull(6))
+    val selection = selectedPoint?.takeIf { (row, col) ->
+        row in pointPositions.indices && col in pointPositions[row].indices
+    }
+    val hasSelection = selection != null
+    // A zero-length handle, such as the outward one on an edge point, sits on top of its point and
+    // would make the point hard to drag, so only handles with a direction get a dot on the canvas.
+    val handleSides = selection?.let { (row, col) ->
+        val pointHandles = handlesSnapshot.handlesAt(row, col)
+        HandleSide.entries.filter { side ->
+            pointPositions.effectiveHandle(row, col, side, pointHandles).getDistance() > 0.0001f
+        }
+    } ?: emptyList()
     val blurRadius = (blurLevel * MAX_BLUR_LEVEL).roundToInt().toFloat()
 
     LaunchedEffect(Unit) {
@@ -352,6 +392,62 @@ fun GradientCanvas(
                                 cap = StrokeCap.Round,
                             )
                         }
+                        if (showPoints && hasSelection) {
+                            val (row, col) = selection
+                            val anchor = pointPositions[row][col]
+                            val handles = handlesSnapshot.handlesAt(row, col)
+                            val curveDash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 8.dp.toPx()))
+                            HandleSide.entries.forEach { side ->
+                                val handle = pointPositions.effectiveHandle(row, col, side, handles)
+                                val start = Offset(anchor.x * size.width, anchor.y * size.height)
+                                val end = Offset(
+                                    (anchor.x + handle.x) * size.width,
+                                    (anchor.y + handle.y) * size.height,
+                                )
+                                val active = side == activeHandle
+                                val (neighborRow, neighborCol) = when (side) {
+                                    HandleSide.Left -> row to col - 1
+                                    HandleSide.Top -> row - 1 to col
+                                    HandleSide.Right -> row to col + 1
+                                    HandleSide.Bottom -> row + 1 to col
+                                }
+                                val neighbor = pointPositions.getOrNull(neighborRow)?.getOrNull(neighborCol)
+                                if (neighbor != null) {
+                                    val facingHandle = pointPositions.effectiveHandle(
+                                        neighborRow, neighborCol, side.opposite,
+                                        handlesSnapshot.handlesAt(neighborRow, neighborCol),
+                                    )
+                                    // The edge uses the handles at both ends, exactly as the mesh painter does.
+                                    val curve = Path().apply {
+                                        moveTo(start.x, start.y)
+                                        cubicTo(
+                                            end.x, end.y,
+                                            (neighbor.x + facingHandle.x) * size.width,
+                                            (neighbor.y + facingHandle.y) * size.height,
+                                            neighbor.x * size.width, neighbor.y * size.height,
+                                        )
+                                    }
+                                    drawPath(curve, Color.Black.copy(alpha = 0.35f), style = Stroke(4.dp.toPx(), pathEffect = curveDash))
+                                    drawPath(
+                                        curve,
+                                        if (active) selectionColor else Color.White.copy(alpha = 0.95f),
+                                        style = Stroke(if (active) 2.5.dp.toPx() else 1.75.dp.toPx(), pathEffect = curveDash),
+                                    )
+                                }
+                                drawLine(
+                                    color = Color.Black.copy(alpha = 0.25f),
+                                    start = start,
+                                    end = end,
+                                    strokeWidth = 3.dp.toPx(),
+                                )
+                                drawLine(
+                                    color = if (active) selectionColor else Color.White.copy(alpha = 0.75f),
+                                    start = start,
+                                    end = end,
+                                    strokeWidth = if (active) 1.5.dp.toPx() else 1.dp.toPx(),
+                                )
+                            }
+                        }
                     }
                     .graphicsLayer {
                         renderEffect = if (blurRadius > 0f) {
@@ -379,23 +475,42 @@ fun GradientCanvas(
                                     xIndex = colIdx,
                                     yIndex = rowIdx,
                                     color = availableColors.findColor(col.second),
-                                    modifier = Modifier.pointerInput(Unit) {
-                                        detectDragGestures(
-                                            onDragStart = {
-                                                onPointDragStartEnd(Pair(rowIdx, colIdx))
-                                            },
-                                            onDragEnd = {
-                                                onPointDragStartEnd(null)
+                                    selected = selection == (rowIdx to colIdx),
+                                    selectedColor = selectionColor,
+                                    modifier = Modifier
+                                        .pointerHoverIcon(PointerIcon.Hand)
+                                        // A press selects the point, so its Bezier handles show for editing.
+                                        .pointerInput(rowIdx, colIdx) {
+                                            awaitPointerEventScope {
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    if (event.type == PointerEventType.Press) {
+                                                        onPointSelected(rowIdx, colIdx)
+                                                    }
+                                                }
                                             }
-                                        ) { change, dragAmount ->
-                                            change.consume()
-                                            handlePointDrag(
-                                                coordinate = Pair(colIdx, rowIdx),
-                                                offsetX = dragAmount.x,
-                                                offsetY = dragAmount.y
-                                            )
                                         }
-                                    })
+                                        .pointerInput(Unit) {
+                                            detectDragGestures(
+                                                onDragStart = {
+                                                    onPointSelected(rowIdx, colIdx)
+                                                    onPointDragStartEnd(Pair(rowIdx, colIdx))
+                                                },
+                                                onDragEnd = {
+                                                    onPointDragStartEnd(null)
+                                                },
+                                                onDragCancel = {
+                                                    onPointDragStartEnd(null)
+                                                }
+                                            ) { change, dragAmount ->
+                                                change.consume()
+                                                handlePointDrag(
+                                                    coordinate = Pair(colIdx, rowIdx),
+                                                    offsetX = dragAmount.x,
+                                                    offsetY = dragAmount.y
+                                                )
+                                            }
+                                        })
                             }
                         }
                     }
@@ -429,6 +544,74 @@ fun GradientCanvas(
                     }
                 }
             )
+            // The selected point's four handles sit above its cursor, at the ends of its tangent lines.
+            Layout(
+                content = {
+                    if (showPoints && hasSelection) {
+                        val (row, col) = selection
+                        handleSides.forEach { side ->
+                            BezierHandleCursor(
+                                color = availableColors.findColor(meshPoints[row][col].second),
+                                active = side == activeHandle,
+                                activeColor = selectionColor,
+                                modifier = Modifier
+                                    .testTag(MeshTestTags.bezierHandle(row, col, side.name.lowercase()))
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    // A press makes this the active handle before a drag begins.
+                                    .pointerInput(row, col, side) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                if (event.type == PointerEventType.Press) {
+                                                    onPointSelected(row, col)
+                                                    onHandleActivated(side)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .pointerInput(row, col, side, maxWidth, maxHeight) {
+                                        // The handle's live position, so a drag that began from an automatic
+                                        // handle keeps following the pointer instead of snapping back each frame.
+                                        var position: Offset? = null
+                                        detectDragGestures(
+                                            onDragStart = {
+                                                onHandleActivated(side)
+                                                position = pointPositions.effectiveHandle(
+                                                    row, col, side, meshHandles.handlesAt(row, col)
+                                                )
+                                            },
+                                            onDragEnd = { position = null },
+                                            onDragCancel = { position = null },
+                                        ) { change, dragAmount ->
+                                            change.consume()
+                                            val next = (position ?: pointPositions.effectiveHandle(
+                                                row, col, side, meshHandles.handlesAt(row, col)
+                                            )) + Offset(dragAmount.x / maxWidth, dragAmount.y / maxHeight)
+                                            position = next
+                                            onHandleDrag(row, col, side, next)
+                                        }
+                                    }
+                            )
+                        }
+                    }
+                },
+                measurePolicy = { measurables, constraints ->
+                    val placeables = measurables.map { it.measure(constraints) }
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        if (measurables.isNotEmpty()) {
+                            val (row, col) = selection!!
+                            val anchor = pointPositions[row][col]
+                            val handles = handlesSnapshot.handlesAt(row, col)
+                            placeables.forEachIndexed { i, placeable ->
+                                val offset = pointPositions.effectiveHandle(row, col, handleSides[i], handles)
+                                val x = (anchor.x + offset.x) * constraints.maxWidth - placeable.width / 2f
+                                val y = (anchor.y + offset.y) * constraints.maxHeight - placeable.height / 2f
+                                placeable.place(x.roundToInt(), y.roundToInt())
+                            }
+                        }
+                    }
+                }
+            )
         }
 
         notifications.reversed().forEach {
@@ -447,4 +630,40 @@ fun GradientCanvas(
             }
         }
     }
+}
+
+/** A draggable dot at the end of a Bezier tangent line, filled with its point's color. */
+@Composable
+private fun BezierHandleCursor(
+    color: Color,
+    active: Boolean,
+    activeColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(22.dp)
+            .drawBehind {
+                if (active) {
+                    drawCircle(color = activeColor.copy(alpha = 0.3f), radius = 10.dp.toPx())
+                    drawCircle(color = Color.Black.copy(alpha = 0.35f), radius = 8.dp.toPx())
+                    drawCircle(color = Color.White, radius = 6.dp.toPx())
+                    drawCircle(
+                        color = activeColor,
+                        radius = 6.dp.toPx(),
+                        style = Stroke(width = 2.dp.toPx()),
+                    )
+                    drawCircle(color = color, radius = 3.dp.toPx())
+                } else {
+                    drawCircle(color = Color.Black.copy(alpha = 0.35f), radius = 7.dp.toPx())
+                    drawCircle(color = Color.White, radius = 5.dp.toPx())
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.5f),
+                        radius = 5.dp.toPx(),
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                    drawCircle(color = color, radius = 2.5.dp.toPx())
+                }
+            }
+    )
 }
