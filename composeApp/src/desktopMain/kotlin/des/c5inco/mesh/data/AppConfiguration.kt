@@ -739,6 +739,8 @@ class AppConfiguration(
 
     /** Edits from the canvas and popup use the same pairing mode; API edits remain independent. */
     fun updateMeshHandle(row: Int, col: Int, side: HandleSide, offset: Offset): Boolean {
+        // Documents store only finite control points, so a NaN or infinite edit would break saving.
+        if (!offset.x.isFinite() || !offset.y.isFinite()) return false
         val mirroring = handleMirroring(row, col, side)
         return recordEdit(group = "handle $row,$col,$side,$mirroring") {
             val current = meshHandles.handlesAt(row, col)

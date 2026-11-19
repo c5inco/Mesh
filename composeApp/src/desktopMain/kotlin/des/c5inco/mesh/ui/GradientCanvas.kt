@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -549,6 +550,9 @@ fun GradientCanvas(
                 content = {
                     if (showPoints && hasSelection) {
                         val (row, col) = selection
+                        // The drag coroutine outlives recompositions, so it reads the latest geometry here.
+                        val currentPositions by rememberUpdatedState(pointPositions)
+                        val currentHandles by rememberUpdatedState(meshHandles)
                         handleSides.forEach { side ->
                             BezierHandleCursor(
                                 color = availableColors.findColor(meshPoints[row][col].second),
@@ -576,16 +580,16 @@ fun GradientCanvas(
                                         detectDragGestures(
                                             onDragStart = {
                                                 onHandleActivated(side)
-                                                position = pointPositions.effectiveHandle(
-                                                    row, col, side, meshHandles.handlesAt(row, col)
+                                                position = currentPositions.effectiveHandle(
+                                                    row, col, side, currentHandles.handlesAt(row, col)
                                                 )
                                             },
                                             onDragEnd = { position = null },
                                             onDragCancel = { position = null },
                                         ) { change, dragAmount ->
                                             change.consume()
-                                            val next = (position ?: pointPositions.effectiveHandle(
-                                                row, col, side, meshHandles.handlesAt(row, col)
+                                            val next = (position ?: currentPositions.effectiveHandle(
+                                                row, col, side, currentHandles.handlesAt(row, col)
                                             )) + Offset(dragAmount.x / maxWidth, dragAmount.y / maxHeight)
                                             position = next
                                             onHandleDrag(row, col, side, next)

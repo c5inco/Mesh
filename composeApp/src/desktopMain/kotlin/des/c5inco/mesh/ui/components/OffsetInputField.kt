@@ -36,7 +36,7 @@ fun OffsetInputField(
         val text = textFieldState.text.toString()
         // Leaving a field without typing must not write its rounded display value back as an edit.
         if (text == formatFloat(value)) return
-        text.toFloatOrNull()?.let { next ->
+        text.toFloatOrNull()?.takeIf { it.isFinite() }?.let { next ->
             onUpdate(next)
         } ?: run {
             reset()

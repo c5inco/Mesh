@@ -273,6 +273,21 @@ class AppConfigurationTest {
     }
 
     @Test
+    fun `a non-finite handle edit is rejected and the saved document keeps autosaving`() = runBlocking {
+        val configuration = loadedConfiguration()
+        assertTrue(configuration.saveDocument(documentFile))
+
+        assertFalse(configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(Float.NaN, 0.1f)))
+        assertFalse(configuration.updateMeshHandle(1, 1, HandleSide.Bottom, Offset(0f, Float.POSITIVE_INFINITY)))
+        assertTrue(configuration.meshHandles[1][1].isAutomatic)
+        assertFalse(configuration.canUndo.value)
+
+        assertTrue(configuration.updateMeshHandle(1, 1, HandleSide.Right, Offset(0.1f, 0.05f)))
+        configuration.flushPendingSave()
+        assertEquals(DocumentHandles(right = DocumentControlPoint(0.1f, 0.05f)), saved(documentFile).points[1][1].handles)
+    }
+
+    @Test
     fun `opposite handle edits mirror both coordinates and reset all restores automatic handles`() = runBlocking {
         val configuration = loadedConfiguration()
         configuration.setHandleMirroring(1, 1, HandleSide.Left, HandleMirroring.ANGLE_AND_LENGTH)
